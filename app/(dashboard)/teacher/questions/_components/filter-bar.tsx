@@ -19,6 +19,8 @@ import {
   QUESTION_TYPE_OPTIONS,
 } from "@/lib/questions/labels";
 
+import { ExportMenu } from "./export-menu";
+
 const ALL = "all";
 
 type SubjectOption = { id: string; name: string; code: string };
@@ -179,6 +181,10 @@ export function FilterBar({ subjects }: { subjects: SubjectOption[] }) {
             aria-label="Memuat"
           />
         ) : null}
+
+        <div className="sm:ml-auto">
+          <ExportMenu />
+        </div>
       </CardContent>
     </Card>
   );

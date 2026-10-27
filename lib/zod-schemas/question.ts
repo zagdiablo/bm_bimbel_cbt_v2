@@ -192,8 +192,24 @@ export const questionListQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
 
+export const questionExportFormatSchema = z.enum(["xlsx", "pdf"]);
+
+/**
+ * Export memakai filter yang sama dengan list, tetapi tanpa pagination.
+ * `format` wajib supaya endpoint tidak pernah menebak jenis file.
+ */
+export const questionExportQuerySchema = z.object({
+  format: questionExportFormatSchema,
+  subjectId: z.string().trim().min(1).optional(),
+  type: questionTypeSchema.optional(),
+  difficulty: difficultySchema.optional(),
+  search: z.string().trim().max(200).optional(),
+});
+
 export type QuestionTypeValue = z.infer<typeof questionTypeSchema>;
 export type DifficultyValue = z.infer<typeof difficultySchema>;
 export type QuestionOptionInput = z.infer<typeof optionInputSchema>;
 export type QuestionInput = z.infer<typeof questionInputSchema>;
 export type QuestionListQuery = z.infer<typeof questionListQuerySchema>;
+export type QuestionExportFormat = z.infer<typeof questionExportFormatSchema>;
+export type QuestionExportQuery = z.infer<typeof questionExportQuerySchema>;

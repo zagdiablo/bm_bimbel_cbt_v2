@@ -1,6 +1,6 @@
 # CBT App
 
-Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 3**: fondasi auth/RBAC, **Bank Soal CRUD** (5 tipe soal, filter, pencarian, soft-delete), dan **import soal XLSX/DOCX/PDF** dengan preview sebelum commit. Workspace guru juga bisa diakses ADMIN.
+Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 4**: fondasi auth/RBAC, **Bank Soal CRUD** (5 tipe soal, filter, pencarian, soft-delete), **import soal XLSX/DOCX/PDF** dengan preview sebelum commit, serta **export bank soal ke XLSX/PDF**. Workspace guru juga bisa diakses ADMIN.
 
 ## Prasyarat
 
@@ -367,11 +367,66 @@ Script `scripts/generate-templates.ts` membuat XLSX dengan SheetJS, lalu memakai
 - Format XLSX membatasi opsi sampai E. Schema API tetap menerima sampai 26 label untuk kebutuhan masa depan.
 - `pdf-parse@2.4.5` dan `mammoth` diproses di server Node, bukan Edge Runtime.
 
-### Known Issues
+## Export Soal (Fase 4)
 
-- `fromStoredOptions()` fallback ke `correctAnswer: true` jika data `TRUE_FALSE` corrupt (kedua opsi `isCorrect=false`). Ini technical debt Fase 9; perbaiki dengan validasi data atau penanganan error eksplisit.
-- `xlsx@0.18.5` memiliki advisory high severity tanpa fix. Import hanya untuk TEACHER/ADMIN dan file dibatasi 10MB; jangan membuka fitur upload ke pengguna anonim. Tinjau ulang sebelum produksi.
-- Commit 50 soal pada environment lokal selesai di bawah 1 detik; transaction timeout diset 60 detik dengan `maxWait` 10 detik sebagai batas aman.
+Export tersedia untuk TEACHER dan ADMIN. Dropdown **Export** ada di filter bar halaman `/teacher/questions`; pilihannya **XLSX (.xlsx)** dan **PDF (.pdf)**. Export memakai filter yang sedang aktif di URL (`subjectId`, `type`, `difficulty`, `search`), sama seperti list — jadi hasil file selalu cocok dengan yang terlihat di layar.
+
+### Endpoint
+
+`GET /api/questions/export`
+
+| Query | Wajib | Keterangan |
+|---|---|---|
+| `format` | ya | `xlsx` atau `pdf` |
+| `subjectId` | tidak | Filter satu mata pelajaran |
+| `type` | tidak | `SINGLE_CHOICE`, `MULTIPLE_CHOICE`, `TRUE_FALSE`, `SHORT_ANSWER`, `ESSAY` |
+| `difficulty` | tidak | `EASY`, `MEDIUM`, `HARD` |
+| `search` | tidak | Pencarian teks soal/pembahasan (maks. 200 karakter) |
+
+Response:
+
+- `Content-Type`: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (XLSX) atau `application/pdf` (PDF).
+- `Content-Disposition: attachment; filename="soal-<subject>-<YYYYMMDD-HHmmss>.xlsx|pdf"`. `<subject>` adalah kode mapel lowercase jika filter `subjectId` dipakai, atau `semua` tanpa filter mapel.
+- Body berupa file biner; tidak ada pagination.
+- RBAC: TEACHER dan ADMIN. TEACHER hanya mengekspor soal miliknya (`ownerId`), ADMIN seluruh bank soal.
+
+### Format XLSX
+
+File XLSX memakai sheet `questions` dan header yang **identik dengan template import Fase 3**, sehingga hasil export bisa langsung diunggah kembali ke fitur import (round-trip):
+
+`subject_code | type | question | option_a | option_b | option_c | option_d | option_e | correct_answers | points | difficulty | explanation`
+
+Pemetaan per tipe:
+
+| Tipe | Kolom opsi | `correct_answers` |
+|---|---|---|
+| `SINGLE_CHOICE` | A–E sesuai urutan opsi | label jawaban, mis. `B` |
+| `MULTIPLE_CHOICE` | A–E sesuai urutan opsi | label dipisah koma, mis. `A,C` |
+| `TRUE_FALSE` | kosong | `true` / `false` |
+| `SHORT_ANSWER` | kosong | variasi jawaban dipisah pipa, mis. `72\|tujuh puluh dua` |
+| `ESSAY` | kosong | kosong |
+
+Catatan penting:
+
+- Label opsi ditulis ulang berdasarkan posisi kolom (A–E), bukan label tersimpan. Parser import memang membaca label dari posisi, sehingga data lama tetap round-trip.
+- Template import menolak kolom opsi untuk `SHORT_ANSWER`. Karena itu variasi jawaban **hanya** ditulis di `correct_answers` (pipe-separated), bukan di `option_a`–`option_e`. Ini sedikit berbeda dari form input, tetapi diperlukan agar file hasil export benar-benar bisa di-re-import.
+- Format XLSX membatasi opsi sampai E (sama dengan template import). Soal dengan lebih dari 5 opsi hanya mengekspor 5 opsi pertama; UI Bank Soal juga membatasi 5 opsi.
+- `explanation` kosong ditulis sebagai sel kosong.
+
+### Format PDF
+
+PDF dibuat dengan `@react-pdf/renderer` (`renderToBuffer`) di server Node — tanpa Puppeteer/Playwright. Layout:
+
+- A4, margin 40pt, font Helvetica bawaan.
+- Header: judul **Bank Soal**, nama mapel (atau "Semua mata pelajaran"), nama user yang mengekspor, timestamp WIB, jumlah soal, dan total poin.
+- Per soal: nomor, badge tipe, badge kesulitan, poin, teks soal (bold), opsi A–E (untuk pilihan ganda), kunci jawaban berwarna hijau, dan pembahasan bila ada.
+- Footer: `Halaman X dari Y` di setiap halaman.
+
+### Batas aman dan scope
+
+- Export menolak lebih dari **2.000 soal** dengan `400` dan pesan `Filter terlalu luas, hasil melebihi 2000 soal. Persempit filter.` Hitung total dilakukan lebih dulu, jadi route tidak menarik seluruh hasil yang terlalu besar.
+- Scope mengikuti `questionScopeWhere()`: TEACHER → `ownerId = user.id`; ADMIN → semua soal non-deleted.
+- `EXPORT_MAX_QUESTIONS` dapat menurunkan batas ini untuk pengujian batas tanpa membuat 2.000+ baris. Default tetap `2000`.
 
 ## Testing
 
@@ -417,7 +472,18 @@ Test memakai database pada `DATABASE_URL` dan membersihkan data `vitest-*@exampl
 
 Test memakai database pada `DATABASE_URL`, mengarahkan file import ke direktori temporary, dan membersihkan user/subject/question/import job di `afterAll`.
 
-Total **26 test** (7 auth + 9 questions + 10 import).
+`tests/export.test.ts` menguji endpoint export XLSX/PDF:
+
+- XLSX 5 soal → `200`, `Content-Type`/`Content-Disposition` benar, `XLSX.read()` menghasilkan 5 baris data
+- XLSX round-trip → file di-parse ulang `parseXlsx()` menjadi 5 soal valid dengan tipe, opsi, kunci, poin, dan pembahasan yang sama
+- PDF 5 soal → `200`, `application/pdf`, magic bytes `%PDF-`
+- Filter `subjectId` → hanya soal mapel tersebut yang diekspor
+- Scope filter → TEACHER hanya soal miliknya (2 baris), ADMIN semua (5 baris, termasuk milik guru lain)
+- Safety cap (`EXPORT_MAX_QUESTIONS=5`) → export 6 soal mengembalikan `400` dengan pesan batas yang jelas
+
+Test memakai user/subject khusus dan filter `search` berprefix unik, sehingga tidak terpengaruh data dari file test lain yang berjalan paralel.
+
+Total **32 test** (7 auth + 9 questions + 10 import + 6 export).
 
 ## Verifikasi Fase 1
 
@@ -484,6 +550,21 @@ Dijalankan pada Node 22.23.4 (npm 10.9.9):
 - STUDENT membuka `/teacher/questions/import` → `307` → `/403`
 - `@napi-rs/canvas` → `canvas OK` (x64 Linux, glibc 2.43)
 
+## Verifikasi Fase 4
+
+Dijalankan pada Node 22-compatible runtime (mesin uji: Node 24.22.0, npm 11.19.1):
+
+- `npx tsc --noEmit` → lolos
+- `npm run lint` → lolos tanpa warning
+- `npm test` → **32 test** lolos (4 file)
+- `npm run build` → lolos, 25 route + middleware; `/api/questions/export` terdaftar dinamis
+- `curl` login TEACHER → export `format=xlsx&subjectId=<MTK>` → `200`, `attachment; filename="soal-mtk-<timestamp>.xlsx"`, `file` mendeteksi **Microsoft Excel 2007+**
+- Export PDF filter MTK → `200`, `application/pdf`, `file` mendeteksi **PDF document, 3 halaman**, teks header/soal/kunci/pembahasan dan footer halaman terbaca
+- Export XLSX tanpa filter mapel: TEACHER **13 baris** (12 MTK + 1 mapel lain miliknya), ADMIN **15 baris** (termasuk 2 soal guru lain) — scope berjalan
+- Export XLSX filter MTK: 12 baris, semua `subject_code = MTK`
+- Upload file XLSX hasil export (5 soal, 5 tipe) ke `/api/questions/import/preview` → `summary: { total: 5, valid: 5, invalid: 0 }` tanpa error baris
+- Filter yang melebihi batas (diuji dengan `EXPORT_MAX_QUESTIONS=5`) → `400` + pesan `Filter terlalu luas...`
+
 ## Struktur Saat Ini
 
 ```text
@@ -508,6 +589,7 @@ app/
       _components/
         question-form.tsx
         filter-bar.tsx
+        export-menu.tsx
         delete-dialog.tsx
     student/page.tsx
   403/page.tsx
@@ -521,6 +603,7 @@ app/
       _shared.ts
       route.ts
       [id]/route.ts
+      export/route.ts
       import/
         _shared.ts
         preview/route.ts
@@ -546,6 +629,7 @@ lib/
   utils.ts
   importers/{types.ts, validate.ts, blocks.ts, xlsx.ts, docx.ts, pdf.ts,
              index.ts, storage.ts, preview.ts, jobs.ts}
+  exporters/{shared.ts, xlsx.ts, pdf.ts, pdf-document.tsx}
   questions/{answers.ts, labels.ts, query.ts}
   zod-schemas/{auth.ts, question.ts}
 middleware.ts
@@ -557,6 +641,7 @@ tests/
   auth.test.ts
   questions.test.ts
   import.test.ts
+  export.test.ts
   fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
   setup.ts
 prisma/
@@ -565,17 +650,40 @@ prisma/
   seed.ts
 ```
 
-## Catatan Keamanan & Utang Teknis
+## Known Issues & Tech Debt
 
-- `npm audit` (production deps) mencatat: `xlsx` high tanpa fix tersedia, `zod` high yang perbaikannya butuh Zod v4 (breaking), serta advisory pada `next`, `prisma`, dan `vitest` yang hanya dapat diselesaikan dengan upgrade mayor. `xlsx` sekarang dipakai import; batasi akses ke TEACHER/ADMIN, batasi ukuran file, dan tinjau ulang sebelum produksi.
-- Rate limit better-auth memakai default library. Belum ada rate limit khusus untuk endpoint wrapper `/api/auth/login`, `/api/auth/register`, endpoint Bank Soal, maupun endpoint import.
-- Import menyimpan file sementara di filesystem lokal (`uploads/imports`). Pastikan direktori tidak dapat diakses publik dan bersihkan orphan file jika database dihapus manual.
+### Import soal
+
+- **`FAILED` vs `errorJson` punya semantik berbeda.** `status = FAILED` hanya dipakai saat parser gagal total (tidak ada baris terbaca dan `globalErrors` terisi); `errorJson` hanya menyimpan `globalErrors` tersebut. Error per baris disimpan di `previewJson.questions[].errors`, dan job tetap `PENDING_PREVIEW` meskipun semua baris invalid (`failedCount = summary.invalid`). Artinya `errorJson = null` bukan berarti file valid — klien harus memeriksa `status`, `summary`, dan error tiap baris.
+- **Cleanup file upload saat server restart belum ada.** File di `uploads/imports/` hanya dihapus saat commit sukses, `DELETE` job, atau expiry lazy yang dipicu list/GET/commit milik user. Tidak ada startup sweep atau rekonsiliasi database ↔ filesystem. File orphan (mis. proses mati antara `saveImportFile()` dan update database, atau job yang tidak pernah dibuka lagi) bisa tertinggal. Sediakan job cleanup berkala sebelum produksi.
+- **Belum ada test untuk `DELETE /api/questions/import/[id]`.** Route ini menghapus job milik user dan file upload-nya, termasuk kasus 404 untuk job milik user lain; perilaku tersebut belum tercakup `tests/import.test.ts`.
+- **Belum ada test expiry TTL 1 jam.** `expireStaleImportJobs()` mengubah job `PENDING_PREVIEW` yang lebih tua dari `IMPORT_TTL_MS` menjadi `EXPIRED` dan menghapus filenya, tetapi belum diuji dengan fake timer/waktu termanipulasi.
+- **Riwayat import dibatasi 10 di server, bukan di client.** `listRecentImportJobs(user.id)` memakai Prisma `take: 10`; UI hanya merender hasilnya. Tidak ada pagination, jadi job ke-11 dan seterusnya hanya bisa diakses lewat URL detail langsung.
+- Commit 50 soal pada environment lokal selesai di bawah 1 detik; transaction timeout diset 60 detik dengan `maxWait` 10 detik sebagai batas aman.
+
+### Export dan data soal
+
+- **Fallback `fromStoredOptions()` untuk `TRUE_FALSE`.** Jika data korup (kedua opsi `isCorrect = false`, atau label/tulisan “Benar” tidak dikenali), fungsi jatuh ke `correctAnswer: true`. Ini membuat soal yang rusak tampak valid di form edit dan di export. Perbaiki dengan validasi data atau error eksplisit di Fase 9.
+- **Opsi lebih dari E terpotong saat export XLSX.** Template import hanya menyediakan `option_a`–`option_e`. Soal lama dengan lebih dari 5 opsi akan kehilangan opsi ke-6 dan seterusnya; soal seperti itu juga tidak bisa round-trip penuh. UI Bank Soal membatasi 5 opsi, tetapi schema API masih menerima 26.
+- **Export menahan seluruh hasil di memori.** XLSX memakai `XLSX.write()` dan PDF memakai `renderToBuffer()`; keduanya membangun buffer penuh sebelum response dikirim. Safety cap 2.000 soal membatasi risiko, tetapi export 2.000 soal PDF bisa lambat dan memakai memori besar. Streaming response/worker terpisah belum ada.
+- **Soft-delete Bank Soal belum punya UI restore/purge.** Baris tetap tersimpan dan hanya difilter lewat `deletedAt`; sediakan job pembersihan atau halaman arsip sebelum produksi.
+- **ADMIN dapat mengubah/menghapus soal guru mana pun (super-user).** Belum ada audit trail untuk perubahan soal.
+
+### Dependensi dan tooling
+
+- **`xlsx@0.18.5` high severity tanpa fix.** Advisory Prototype Pollution dan ReDoS pada SheetJS. Dipakai untuk import dan export; akses sudah dibatasi TEACHER/ADMIN, file import dibatasi 10MB, dan export dibatasi 2.000 soal. Jangan membuka upload ke pengguna anonim; tinjau ulang sebelum produksi.
+- **`zod` high severity, perbaikan butuh Zod v4 (breaking).** Advisory memory exhaustion saat memvalidasi koleksi besar. Proyek masih di Zod 3.25; upgrade ke Zod 4 adalah perubahan mayor yang perlu migrasi schema dan error handling.
+- **Edge middleware dan `jose`/`DecompressionStream`.** Middleware memakai `better-auth/cookies` dan rantai `jose`. Bergantung versi bundler, ini dapat memunculkan warning `DecompressionStream` (API Node yang tidak tersedia di Edge Runtime). Build lokal terakhir tidak menampilkan warning, tetapi middleware harus tetap Edge-safe: jangan menambahkan Prisma/Node API ke `middleware.ts`; verifikasi sesi otoritatif tetap di server component/route.
+- **Advisory `next`/`prisma`/`vitest`.** `npm audit` mencatat advisory pada `next`/`postcss`, `@prisma/config`/`deepmerge-ts`, serta `vitest`/`tinypool`/`@vitest/mocker` (termasuk critical pada rantai tooling test). Perbaikannya memerlukan upgrade mayor (Next, Prisma, Vitest) dan belum dilakukan pada fase ini; sebagian besar berada di toolchain dev, bukan kode runtime.
+
+### Lain-lain
+
+- Rate limit better-auth memakai default library. Belum ada rate limit khusus untuk endpoint wrapper `/api/auth/login`, `/api/auth/register`, endpoint Bank Soal, maupun endpoint import/export.
+- Import menyimpan file sementara di filesystem lokal (`uploads/imports`). Pastikan direktori tidak dapat diakses publik; ganti dengan object storage bila deploy ke platform serverless dengan filesystem read-only.
 - Belum ada verifikasi email, reset password, dan manajemen sesi per perangkat.
 - `classroom` diisi lewat seed/admin; belum ada UI pengelolaan.
-- Soft-delete Bank Soal belum punya UI restore/purge. Baris tetap tersimpan dan hanya difilter lewat `deletedAt`; sediakan job pembersihan atau halaman arsip sebelum produksi.
-- ADMIN dapat mengubah/menghapus soal guru mana pun (super-user). Belum ada audit trail untuk perubahan soal.
 - `@radix-ui/react-alert-dialog` ditambahkan khusus untuk konfirmasi hapus (komponen shadcn `alert-dialog`); tidak ada dependensi UI lain yang berubah.
 
 ## Fase Berikutnya
 
-Fase 3 (import bank soal XLSX/DOCX/PDF) selesai. Fase 4 dan seterusnya mencakup manajemen ujian, pelaksanaan CBT, penilaian, serta manajemen pengguna/mata pelajaran.
+Fase 4 (export bank soal XLSX/PDF) selesai. Fase berikutnya mencakup manajemen ujian, pelaksanaan CBT, penilaian, serta manajemen pengguna/mata pelajaran.

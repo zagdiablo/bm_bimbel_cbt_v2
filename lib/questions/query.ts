@@ -9,6 +9,12 @@ import type {
 
 export type QuestionScopeUser = { id: string; role: Role };
 
+/** Filter yang dipakai bersama oleh list (berpaginasi) dan export (tanpa pagination). */
+export type QuestionFilters = Pick<
+  QuestionListQuery,
+  "subjectId" | "type" | "difficulty" | "search"
+>;
+
 /**
  * ADMIN adalah super-user: melihat seluruh bank soal. TEACHER hanya melihat
  * soal miliknya sendiri. Filter dipakai identik oleh API dan halaman server.
@@ -20,7 +26,7 @@ export function questionScopeWhere(
 }
 
 export function buildQuestionWhere(
-  query: QuestionListQuery,
+  query: QuestionFilters,
   user: QuestionScopeUser,
 ): Prisma.QuestionWhereInput {
   const filters: Prisma.QuestionWhereInput[] = [
@@ -102,6 +108,28 @@ export async function findQuestionForUser(
       ...questionScopeWhere(user),
     },
     include: questionInclude,
+  });
+}
+
+/**
+ * Export tidak memakai pagination. Hitung dulu supaya route bisa menolak
+ * filter yang terlalu luas sebelum menarik ribuan baris dari database.
+ */
+export async function countQuestions(
+  query: QuestionFilters,
+  user: QuestionScopeUser,
+): Promise<number> {
+  return prisma.question.count({ where: buildQuestionWhere(query, user) });
+}
+
+export async function listQuestionsForExport(
+  query: QuestionFilters,
+  user: QuestionScopeUser,
+): Promise<QuestionListItem[]> {
+  return prisma.question.findMany({
+    where: buildQuestionWhere(query, user),
+    include: questionInclude,
+    orderBy: [{ createdAt: "desc" }, { id: "asc" }],
   });
 }
 
