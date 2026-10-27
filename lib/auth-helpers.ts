@@ -4,6 +4,14 @@ import { redirect } from "next/navigation";
 import type { Role } from "@prisma/client";
 
 import { auth } from "@/lib/auth";
+import { HttpError } from "@/lib/api";
+
+/**
+ * Re-export agar import lama (`from "@/lib/auth-helpers"`) tetap berjalan.
+ * Definisi class sekarang ada di `lib/api.ts` supaya route API bisa memakainya
+ * tanpa menarik modul auth/Next headers.
+ */
+export { HttpError };
 
 export interface AuthUser {
   id: string;
@@ -11,16 +19,6 @@ export interface AuthUser {
   email: string;
   role: Role;
   classroom: string | null;
-}
-
-export class HttpError extends Error {
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = "HttpError";
-    this.status = status;
-  }
 }
 
 /**

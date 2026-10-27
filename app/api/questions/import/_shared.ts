@@ -12,6 +12,7 @@ import {
 } from "@/lib/importers/preview";
 
 export { expireStaleImportJobs };
+export { apiError, readJsonBody, validationError } from "@/lib/api";
 
 export async function requireOwnedImportJob(
   id: string,

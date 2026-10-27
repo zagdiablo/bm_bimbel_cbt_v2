@@ -428,6 +428,131 @@ PDF dibuat dengan `@react-pdf/renderer` (`renderToBuffer`) di server Node — ta
 - Scope mengikuti `questionScopeWhere()`: TEACHER → `ownerId = user.id`; ADMIN → semua soal non-deleted.
 - `EXPORT_MAX_QUESTIONS` dapat menurunkan batas ini untuk pengujian batas tanpa membuat 2.000+ baris. Default tetap `2000`.
 
+## Manajemen Ujian (Fase 5)
+
+Manajemen ujian tersedia untuk TEACHER dan ADMIN di `/teacher/exams`. Alurnya: **buat draft → pilih soal → atur urutan/poin → publish → tutup**. Publish mengunci konten dan membuat snapshot permanen; edit/hapus hanya berlaku untuk draft.
+
+### Matriks akses dan scope
+
+| Path | ADMIN | TEACHER | STUDENT |
+|---|---|---|---|
+| `/teacher/exams`, `/teacher/exams/*` | ✅ (super-user) | ✅ | 403 |
+| `/api/exams`, `/api/exams/*` | ✅ | ✅ | 403 |
+
+| Role | Daftar ujian | Detail / ubah / publish / hapus |
+|---|---|---|
+| TEACHER | `ownerId = user.id` | hanya miliknya (selain itu 404) |
+| ADMIN | semua ujian | semua ujian |
+
+Picker soal memakai `GET /api/questions?subjectId=...`, sehingga scope soal tetap sama dengan Bank Soal: TEACHER hanya soal miliknya, ADMIN semua soal. TEACHER tidak dapat menyusun ujian dari soal guru lain.
+
+### Endpoint
+
+| Method | Path | Keterangan |
+|---|---|---|
+| `GET` | `/api/exams` | Filter `status`, `subjectId`, `search`, `startFrom`, `startTo`, `page`, `pageSize` (max 100). Response `{ items, total, page, pageSize }`. |
+| `POST` | `/api/exams` | Buat draft. `ownerId` dari sesi. `201` + detail. |
+| `GET` | `/api/exams/[id]` | Detail + daftar soal + `totalPoints`. |
+| `PATCH` | `/api/exams/[id]` | **Full replace** informasi dasar. Hanya DRAFT. |
+| `PUT` | `/api/exams/[id]/questions` | Batch replace seluruh daftar soal. Hanya DRAFT. Urutan ditetapkan server dari index array. |
+| `POST` | `/api/exams/[id]/publish` | DRAFT → PUBLISHED; validasi, snapshot, token. |
+| `POST` | `/api/exams/[id]/close` | PUBLISHED → CLOSED. |
+| `DELETE` | `/api/exams/[id]` | Hanya DRAFT; hard delete + cascade `exam_questions`. |
+
+Semua route memakai `requireRole(["TEACHER", "ADMIN"])`. Error validasi memakai bentuk yang sama dengan Bank Soal (`{ message, errors }`); error publish yang menyangkut soal tertentu menambahkan `invalidQuestions`.
+
+### Status
+
+```text
+DRAFT ──publish──> PUBLISHED ──close──> CLOSED (terminal)
+  │
+  └──hard delete──> (hilang)
+```
+
+- `PUBLISHED` dan `CLOSED` tidak dapat dihapus, termasuk setelah close. Histori attempt/nilai Fase 6–7 harus dilindungi.
+- Tidak ada unpublish/reopen. Draft boleh diedit/dihapus; setelah publish konten immutable.
+- `publishedAt` dan `closedAt` diisi saat transisi. Transisi memakai conditional `updateMany` untuk mencegah double publish/close; race → `409`.
+- Menutup ujian tidak menghapus token; token tetap tersimpan untuk referensi.
+
+### Snapshot publish (kontrak Fase 6/7)
+
+`ExamQuestion.snapshotJson` awalnya `NULL` untuk draft dan **wajib terisi untuk status non-DRAFT**. Saat publish, setiap baris diisi:
+
+```json
+{
+  "version": 1,
+  "questionId": "...",
+  "subjectId": "...",
+  "type": "SINGLE_CHOICE",
+  "questionText": "...",
+  "explanation": "...",
+  "difficulty": "EASY",
+  "points": 2,
+  "options": [
+    { "label": "A", "text": "...", "isCorrect": false, "order": 1 },
+    { "label": "B", "text": "...", "isCorrect": true, "order": 2 }
+  ],
+  "capturedAt": "2026-10-27T04:54:39.030Z",
+  "sourceUpdatedAt": "2026-10-27T04:54:18.082Z"
+}
+```
+
+Aturan yang mengikat Fase 6–8:
+
+- Untuk `PUBLISHED`/`CLOSED`, **satu-satunya sumber kebenaran konten adalah snapshot**. Jangan membaca `Question`/`QuestionOption` live.
+- Attempt Fase 6 harus FK ke `ExamQuestion.id`, bukan `Question.id`.
+- Poin efektif = `pointsOverride ?? snapshot.points`.
+- Kunci jawaban pilihan ganda memakai `label` (stabil), bukan `QuestionOption.id`. Short answer memakai `text` yang dinormalisasi.
+- API siswa Fase 6 wajib memakai `toExamQuestionView(..., { forStudent: true })` untuk membuang `isCorrect` dan `explanation`.
+- `parseExamSnapshot()` memvalidasi field wajib dan **mengabaikan unknown fields** (forward-compatible). Kalau snapshot invalid pada exam non-DRAFT, jangan fallback ke data live; itu data integrity error.
+- `shuffleQuestions`/`shuffleOptions` hanya flag presentasi. Fase 6 harus menyimpan urutan/seed per attempt agar resume tidak mengubah urutan.
+- `showResult` dibaca Fase 7 untuk menentukan visibilitas hasil.
+
+Helper terkait ada di `lib/exams/snapshot.ts` (`buildExamSnapshot`, `parseExamSnapshot`, `snapshotAnswerIssues`, `toExamQuestionView`).
+
+### Validasi publish
+
+Publish ditolak (`400`) jika:
+
+- tidak ada soal, atau lebih dari 200 soal;
+- `startAt`/`endAt` kosong, `startAt >= endAt`, atau `endAt` sudah lewat;
+- durasi di luar 1–480 menit;
+- ada `questionId` null (soal di-hard-delete), soal soft-deleted, atau soal bukan dari mapel ujian;
+- ada `pointsOverride` di luar 1–1000;
+- kunci jawaban tidak valid menurut tipe: single choice tepat 1 kunci, multiple choice minimal 1, true/false tepat 2 opsi dan 1 kunci, short answer minimal 1 kunci non-kosong;
+- duplikat `questionId`.
+
+Snapshot dibangun di dalam transaksi yang sama dengan conditional `DRAFT → PUBLISHED`, sehingga publish yang gagal tidak meninggalkan status setengah jadi. Snapshot ditulis dengan `capturedAt` yang sama untuk seluruh soal.
+
+### Token
+
+- Draft: `token = NULL`, tidak pernah dikirim ke client.
+- Publish: token 6 karakter dari alphabet `A–Z2–9` tanpa `I`, `O`, `0`, `1`; dibuat dengan `crypto.randomInt`.
+- Kolom `token` unique; collision di-retry maksimal 5 kali.
+- Token ditampilkan di detail (copy button), tidak di list, dan tidak di-log.
+- Token bukan satu-satunya otorisasi: Fase 6 tetap harus cek status, jadwal, dan role.
+
+### UI
+
+- `/teacher/exams` — list, filter status/mapel/tanggal/search, pagination, status badge.
+- `/teacher/exams/new` — informasi dasar saja; setelah dibuat redirect ke halaman edit.
+- `/teacher/exams/[id]/edit` — informasi dasar + picker soal + reorder up/down/posisi + points override.
+- `/teacher/exams/[id]` — detail, preview soal, token, publish/close/delete.
+- Picker memakai dialog `max-w-4xl`, pencarian debounce 300ms, checkbox native, pagination 20 soal.
+- Reorder memakai tombol naik/turun + input posisi (tanpa dnd-kit).
+- Waktu diinput sebagai `datetime-local` WIB dan dikonversi ke ISO UTC; detail menampilkan WIB.
+- Publish disabled jika belum ada soal / jadwal belum lengkap / jadwal sudah lewat. Server tetap memvalidasi ulang.
+- Draft yang memiliki soal sudah dihapus menampilkan warning dan menyembunyikan baris yang tidak valid dari editor; simpan untuk membersihkannya.
+
+### Keputusan default
+
+- **Snapshot di JSONB per `ExamQuestion`**, bukan tabel snapshot terpisah. Satu baris = satu sumber konten immutable; tidak ada join tambahan.
+- **Snapshot saat publish**, bukan saat memilih soal. Draft selalu mengikuti bank soal live; publish mengambil versi terbaru.
+- **Batch PUT** untuk daftar soal. Draft belum punya attempt, jadi replace baris aman dan UI reorder menjadi sederhana.
+- **Delete hanya draft**. Exam published/closed dipertahankan untuk histori.
+- **`totalPoints` tidak disimpan**. Dihitung dari `pointsOverride ?? snapshot.points` saat detail dibaca.
+- **Seed** menyertakan `demo-exam-1` berstatus DRAFT dengan 3 soal MTK untuk verifikasi manual.
+
 ## Testing
 
 ```bash
@@ -483,7 +608,27 @@ Test memakai database pada `DATABASE_URL`, mengarahkan file import ke direktori 
 
 Test memakai user/subject khusus dan filter `search` berprefix unik, sehingga tidak terpengaruh data dari file test lain yang berjalan paralel.
 
-Total **32 test** (7 auth + 9 questions + 10 import + 6 export).
+`tests/exams.test.ts` menguji manajemen ujian secara langsung, termasuk tiga gate Fase 5:
+
+- create valid → `201` DRAFT, owner benar, token null
+- durasi 0/481, jadwal terbalik, subject tidak ada → `400`
+- PATCH draft → `200`; PATCH published → `400`; ganti mapel saat ada soal → `400`
+- PUT questions menyimpan urutan + `pointsOverride`; duplikat/soft-deleted/mapel lain/>200 soal → `400`
+- publish tanpa soal/jadwal/soal soft-deleted/kunci invalid → `400`
+- publish valid → PUBLISHED + token 6 karakter + `publishedAt` + snapshot JSON terisi
+- publish ulang → `400`
+- **Gate immutability:** edit soal bank setelah publish → GET tetap snapshot lama
+- **Gate immutability:** hard-delete soal setelah publish → snapshot utuh, `questionId` null
+- close draft/published/closed dan delete draft/published/closed sesuai state machine
+- student `GET /api/exams` → `403`; teacher exam guru lain → `404`; admin → `200`
+- list scope/filter status/subject/search; `totalPoints` = override + default
+- **Gate answer-key isolation:** `toExamQuestionView(forStudent: true)` tidak mengembalikan `isCorrect`/`explanation`
+- **Gate snapshot versioning:** `parseExamSnapshot` menerima unknown fields dan membuangnya
+- token generator: 1.000 token unik, panjang 6, alphabet aman
+
+Test memakai user/subject khusus, judul berprefix unik, dan cleanup `afterAll`, sehingga aman terhadap parallel test file lain.
+
+Total **66 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams).
 
 ## Verifikasi Fase 1
 
@@ -565,6 +710,26 @@ Dijalankan pada Node 22-compatible runtime (mesin uji: Node 24.22.0, npm 11.19.1
 - Upload file XLSX hasil export (5 soal, 5 tipe) ke `/api/questions/import/preview` → `summary: { total: 5, valid: 5, invalid: 0 }` tanpa error baris
 - Filter yang melebihi batas (diuji dengan `EXPORT_MAX_QUESTIONS=5`) → `400` + pesan `Filter terlalu luas...`
 
+## Verifikasi Fase 5
+
+Dijalankan pada Node 24.22.0 (npm 11.19.1):
+
+- `npx prisma validate` → schema valid
+- `npx prisma migrate dev --name add_exam_management` → migration `20261027044726_add_exam_management` diterapkan
+- `npx tsc --noEmit` → lolos
+- `npm run lint` → lolos tanpa warning
+- `npm test` → **66 test** lolos (5 file)
+- `npm run build` → lolos, **32 route** + middleware; seluruh route `/api/exams/*` dan halaman `/teacher/exams/*` terdaftar dinamis
+- `npm run db:seed` → membuat `demo-exam-1` DRAFT dengan 3 soal MTK
+- `curl` login TEACHER → `POST /api/exams` → `DRAFT`; `PUT /questions` (3 soal, satu `pointsOverride: 4`) → `DRAFT`; `POST /publish` → `PUBLISHED`, token **`4P56D5`**, `publishedAt` terisi, `totalPoints = 6`
+- Setelah publish, `PATCH /api/questions/demo-q1` mengubah teks soal bank; `GET /api/exams/<id>` tetap mengembalikan teks snapshot lama dan `source: "snapshot"`
+- `psql`:
+  - `SELECT id, status, token, "publishedAt" FROM exams` → `PUBLISHED | 4P56D5`
+  - `SELECT "examId", "questionId", "pointsOverride", jsonb_typeof("snapshotJson") FROM exam_questions` → 3 baris, semuanya `object`, `demo-q2` memiliki `pointsOverride = 4`
+  - `jsonb_pretty("snapshotJson")` menampilkan `version: 1`, `questionText`, `options[].isCorrect`, `capturedAt`, `sourceUpdatedAt`
+- Gate answer-key isolation diverifikasi di `tests/exams.test.ts`: `toExamQuestionView(forStudent: true)` tidak memiliki `explanation` dan tidak ada `isCorrect` pada opsi
+- Gate snapshot versioning diverifikasi: `parseExamSnapshot({ ...snapshot, extraField: "future-data" })` tetap valid dan membuang `extraField`
+
 ## Struktur Saat Ini
 
 ```text
@@ -591,6 +756,14 @@ app/
         filter-bar.tsx
         export-menu.tsx
         delete-dialog.tsx
+    teacher/exams/
+      page.tsx
+      new/page.tsx
+      [id]/page.tsx
+      [id]/edit/page.tsx
+      _components/{exam-form.tsx, exam-filter-bar.tsx, exam-actions.tsx,
+                  question-picker-dialog.tsx, token-card.tsx,
+                  delete-exam-dialog.tsx, status-badge.tsx, types.ts}
     student/page.tsx
   403/page.tsx
   api/
@@ -609,6 +782,13 @@ app/
         preview/route.ts
         commit/route.ts
         [id]/route.ts
+    exams/
+      _shared.ts
+      route.ts
+      [id]/route.ts
+      [id]/questions/route.ts
+      [id]/publish/route.ts
+      [id]/close/route.ts
     subjects/route.ts
   globals.css
   layout.tsx
@@ -621,6 +801,7 @@ components/
 hooks/
   use-toast.ts
 lib/
+  api.ts
   auth.ts
   auth-client.ts
   auth-helpers.ts
@@ -631,7 +812,8 @@ lib/
              index.ts, storage.ts, preview.ts, jobs.ts}
   exporters/{shared.ts, xlsx.ts, pdf.ts, pdf-document.tsx}
   questions/{answers.ts, labels.ts, query.ts}
-  zod-schemas/{auth.ts, question.ts}
+  exams/{datetime.ts, labels.ts, query.ts, snapshot.ts, token.ts}
+  zod-schemas/{auth.ts, exam.ts, question.ts}
 middleware.ts
 public/
   templates/{template-import-soal.xlsx, .docx, .pdf}
@@ -642,6 +824,7 @@ tests/
   questions.test.ts
   import.test.ts
   export.test.ts
+  exams.test.ts
   fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
   setup.ts
 prisma/
@@ -669,6 +852,21 @@ prisma/
 - **Soft-delete Bank Soal belum punya UI restore/purge.** Baris tetap tersimpan dan hanya difilter lewat `deletedAt`; sediakan job pembersihan atau halaman arsip sebelum produksi.
 - **ADMIN dapat mengubah/menghapus soal guru mana pun (super-user).** Belum ada audit trail untuk perubahan soal.
 
+### Manajemen ujian
+
+- **Tidak ada clone/duplikat ujian.** Salah ketik judul atau jadwal setelah publish tidak bisa diperbaiki; guru harus membuat ujian baru dari nol. Pertimbangkan fitur duplikat di Fase 9.
+- **Tidak ada unpublish (PUBLISHED → DRAFT).** Setelah publish, konten dan metadata ujian immutable. Ini disengaja untuk integritas snapshot, tetapi konsekuensinya typo setelah publish tidak bisa diperbaiki.
+- **Tidak ada audit trail aktor.** `publishedAt`/`closedAt` hanya menyimpan waktu, bukan **siapa** yang melakukan publish/close. Tambahkan audit log sebelum produksi.
+- **Token tidak bisa di-regenerate/revoke.** Token tetap tersimpan setelah ujian ditutup. Kalau token bocor, belum ada tombol membuat token baru atau mencabut token lama.
+- **Tidak ada rate limit khusus endpoint exam/publish.** Akses tetap dibatasi TEACHER/ADMIN, tetapi percobaan create/publish/publish-retry (termasuk retry token collision) belum dibatasi.
+- **Pencarian judul memakai `contains`/ILIKE tanpa index.** `GET /api/exams?search=` memakai `contains` case-insensitive pada `exams.title`; B-tree tidak membantu pola `%...%`. Untuk data besar, tambahkan `pg_trgm` + GIN index pada `title`.
+- **Snapshot JSON tidak diindeks untuk pencarian.** Report Fase 8 sebaiknya membaca attempt/answer, bukan melakukan query teks ke `snapshotJson`. Kalau perlu, tambahkan GIN index pada kolom JSONB.
+- **Response detail memuat seluruh soal.** Batas 200 soal × teks maksimal 20.000 karakter bisa menghasilkan response beberapa MB (worst case ~4 MB) sebelum JSON overhead. Preview bertahap/pagination atau endpoint preview terpisah bisa ditambahkan bila diperlukan.
+- **Urutan acak belum reproducible.** `shuffleQuestions`/`shuffleOptions` baru berupa flag; Fase 6 harus menyimpan urutan/seed per attempt.
+- **Tidak ada auto-close berdasarkan `endAt`.** `CLOSED` hanya transisi manual. Fase 6 tetap harus menolak akses di luar jadwal, meskipun status masih `PUBLISHED`.
+- **Zona waktu UI diasumsikan WIB (UTC+7).** Server menyimpan UTC; label dan konversi `datetime-local` memakai offset tetap `+07:00`. Jika ada sekolah di zona waktu lain, tambahkan pilihan timezone.
+- **Draft dengan soal yang sudah dihapus disembunyikan dari editor.** Detail menampilkan warning, tetapi menyimpan editor akan menghapus baris yang tidak valid. Ini disengaja agar draft bisa dibersihkan; perlu konfirmasi eksplisit bila UX dianggap terlalu agresif.
+
 ### Dependensi dan tooling
 
 - **`xlsx@0.18.5` high severity tanpa fix.** Advisory Prototype Pollution dan ReDoS pada SheetJS. Dipakai untuk import dan export; akses sudah dibatasi TEACHER/ADMIN, file import dibatasi 10MB, dan export dibatasi 2.000 soal. Jangan membuka upload ke pengguna anonim; tinjau ulang sebelum produksi.
@@ -686,4 +884,4 @@ prisma/
 
 ## Fase Berikutnya
 
-Fase 4 (export bank soal XLSX/PDF) selesai. Fase berikutnya mencakup manajemen ujian, pelaksanaan CBT, penilaian, serta manajemen pengguna/mata pelajaran.
+Fase 5 (manajemen ujian + snapshot publish) selesai. Fase berikutnya mencakup pelaksanaan CBT (attempt), penilaian otomatis/manual, rekap nilai, serta manajemen pengguna/mata pelajaran. Fase 6 wajib memakai `ExamQuestion.snapshotJson` sebagai sumber konten dan `toExamQuestionView(..., { forStudent: true })` untuk endpoint siswa.

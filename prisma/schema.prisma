@@ -41,6 +41,12 @@ enum ImportFileType {
   PDF
 }
 
+enum ExamStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+}
+
 model User {
   id            String   @id @default(cuid())
   name          String
@@ -57,6 +63,7 @@ model User {
   subjects   Subject[]
   questions  Question[]
   importJobs ImportJob[]
+  exams      Exam[]
 
   @@map("users")
 }
@@ -120,6 +127,7 @@ model Subject {
 
   owner     User       @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   questions Question[]
+  exams     Exam[]
 
   @@index([ownerId])
   @@map("subjects")
@@ -138,9 +146,10 @@ model Question {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
-  subject Subject          @relation(fields: [subjectId], references: [id], onDelete: Restrict)
-  owner   User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  options QuestionOption[]
+  subject       Subject          @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  owner         User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  options       QuestionOption[]
+  examQuestions ExamQuestion[]
 
   @@index([subjectId])
   @@index([ownerId])
@@ -187,4 +196,51 @@ model ImportJob {
   @@index([userId])
   @@index([status])
   @@map("import_jobs")
+}
+
+model Exam {
+  id               String     @id @default(cuid())
+  title            String
+  subjectId        String
+  ownerId          String
+  durationMinutes  Int
+  startAt          DateTime?
+  endAt            DateTime?
+  token            String?    @unique
+  shuffleQuestions Boolean    @default(false)
+  shuffleOptions   Boolean    @default(false)
+  showResult       Boolean    @default(true)
+  status           ExamStatus @default(DRAFT)
+  publishedAt      DateTime?
+  closedAt         DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  subject   Subject        @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  owner     User           @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  questions ExamQuestion[]
+
+  @@index([ownerId, createdAt])
+  @@index([subjectId])
+  @@index([status, startAt])
+  @@map("exams")
+}
+
+model ExamQuestion {
+  id             String   @id @default(cuid())
+  examId         String
+  questionId     String?
+  order          Int
+  pointsOverride Int?
+  snapshotJson   Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  exam     Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
+  question Question? @relation(fields: [questionId], references: [id], onDelete: SetNull)
+
+  @@unique([examId, questionId])
+  @@index([examId, order])
+  @@index([questionId])
+  @@map("exam_questions")
 }

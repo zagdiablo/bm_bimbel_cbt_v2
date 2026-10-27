@@ -175,9 +175,63 @@ async function seedSubjectAndQuestions() {
   }
 }
 
+async function seedDemoExam() {
+  const teacher = await prisma.user.findUniqueOrThrow({
+    where: { email: "teacher@cbt.local" },
+  });
+  const subject = await prisma.subject.findUniqueOrThrow({
+    where: { code: "MTK" },
+  });
+  const now = Date.now();
+  const startAt = new Date(now + 24 * 60 * 60 * 1000);
+  const endAt = new Date(now + 48 * 60 * 60 * 1000);
+
+  const exam = await prisma.exam.upsert({
+    where: { id: "demo-exam-1" },
+    update: {
+      title: "Ulangan Harian Matematika",
+      subjectId: subject.id,
+      ownerId: teacher.id,
+      durationMinutes: 90,
+      startAt,
+      endAt,
+      token: null,
+      shuffleQuestions: false,
+      shuffleOptions: true,
+      showResult: true,
+      status: "DRAFT",
+      publishedAt: null,
+      closedAt: null,
+    },
+    create: {
+      id: "demo-exam-1",
+      title: "Ulangan Harian Matematika",
+      subjectId: subject.id,
+      ownerId: teacher.id,
+      durationMinutes: 90,
+      startAt,
+      endAt,
+      shuffleQuestions: false,
+      shuffleOptions: true,
+      showResult: true,
+      status: "DRAFT",
+    },
+  });
+
+  await prisma.examQuestion.deleteMany({ where: { examId: exam.id } });
+  await prisma.examQuestion.createMany({
+    data: ["demo-q1", "demo-q2", "demo-q3"].map((questionId, index) => ({
+      examId: exam.id,
+      questionId,
+      order: index + 1,
+    })),
+  });
+}
+
 async function main() {
   await seedUsers();
   await seedSubjectAndQuestions();
+  await seedDemoExam();
 
   console.log("Seed selesai.");
   console.log("Admin   : admin@cbt.local / Admin#123");

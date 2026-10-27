@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
-import { ClipboardCheck, FileQuestion, Upload } from "lucide-react";
+import {
+  ClipboardCheck,
+  ClipboardList,
+  FileQuestion,
+  Upload,
+} from "lucide-react";
 
 import {
   Card,
@@ -16,6 +21,7 @@ export const metadata: Metadata = {
 
 const stats = [
   { label: "Bank soal", hint: "Soal milik Anda", icon: FileQuestion },
+  { label: "Ujian", hint: "Draft & terjadwal", icon: ClipboardList },
   { label: "Impor soal", hint: "DOCX, PDF, XLSX", icon: Upload },
   { label: "Perlu dikoreksi", hint: "Jawaban esai", icon: ClipboardCheck },
 ];
@@ -53,10 +59,10 @@ export default async function TeacherPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Modul berikutnya</CardTitle>
+          <CardTitle>Fase berikutnya</CardTitle>
           <CardDescription>
-            CRUD soal, impor dokumen, dan penyusunan ujian dikerjakan pada fase
-            selanjutnya.
+            Pelaksanaan CBT (attempt), penilaian otomatis, dan rekap nilai
+            dikerjakan pada fase selanjutnya.
           </CardDescription>
         </CardHeader>
       </Card>
