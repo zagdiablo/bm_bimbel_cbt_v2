@@ -94,6 +94,8 @@ export async function listExams(
 const examDetailInclude = {
   subject: { select: subjectSelect },
   owner: { select: examOwnerSelect },
+  publishedBy: { select: examOwnerSelect },
+  closedBy: { select: examOwnerSelect },
   _count: { select: { questions: true } },
 } satisfies Prisma.ExamInclude;
 
@@ -160,6 +162,9 @@ export type ExamDetail = {
   updatedAt: Date;
   subject: { id: string; name: string; code: string };
   owner: { id: string; name: string };
+  /** Audit aktor publish/close. Null untuk exam yang dibuat sebelum Fase 9. */
+  publishedBy: { id: string; name: string } | null;
+  closedBy: { id: string; name: string } | null;
   questionCount: number;
   totalPoints: number;
   questions: ExamQuestionView[];

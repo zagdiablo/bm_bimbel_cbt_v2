@@ -70,6 +70,9 @@ export type ReportExam = {
   showResult: boolean;
   publishedAt: string | null;
   closedAt: string | null;
+  /** Audit aktor publish/close; null untuk exam sebelum Fase 9. */
+  publishedBy: ReportExamOwner | null;
+  closedBy: ReportExamOwner | null;
 };
 
 export type HistogramBin = {

@@ -146,10 +146,14 @@ export default async function ExamDetailPage({
               </span>
             </InfoRow>
             <InfoRow label="Publish">
-              {exam.publishedAt ? formatWib(exam.publishedAt) : "Belum"}
+              {exam.publishedAt
+                ? `${formatWib(exam.publishedAt)} · ${exam.publishedBy?.name ?? "—"}`
+                : "Belum"}
             </InfoRow>
             <InfoRow label="Ditutup">
-              {exam.closedAt ? formatWib(exam.closedAt) : "Belum"}
+              {exam.closedAt
+                ? `${formatWib(exam.closedAt)} · ${exam.closedBy?.name ?? "—"}`
+                : "Belum"}
             </InfoRow>
             <InfoRow label="Acak soal">
               <span className="inline-flex items-center gap-1">

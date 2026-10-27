@@ -1629,6 +1629,62 @@ describe("Gate 4 — score validation and detail contract", () => {
   });
 });
 
+describe("Audit trail", () => {
+  it("grade dan regrade tidak mengubah audit publish/close exam", async () => {
+    const submitted = await createSubmittedAttempt({
+      questionIds: [questionIds.essay1],
+      student: studentB,
+    });
+    const essayId = await examQuestionIdFor(
+      submitted.examId,
+      questionIds.essay1,
+    );
+
+    const closed = await closeAs(teacherA, submitted.examId);
+
+    expect(closed.response.status).toBe(200);
+
+    const before = await prisma.exam.findUniqueOrThrow({
+      where: { id: submitted.examId },
+      select: {
+        publishedById: true,
+        closedById: true,
+        publishedAt: true,
+        closedAt: true,
+      },
+    });
+
+    expect(before.publishedById).toBe(teacherA.id);
+    expect(before.closedById).toBe(teacherA.id);
+
+    const graded = await putEssayAs(teacherA, submitted.attemptId, essayId, {
+      score: 4,
+      baseRevision: 0,
+    });
+
+    expect(graded.response.status).toBe(200);
+
+    const regraded = await putEssayAs(admin, submitted.attemptId, essayId, {
+      score: 5,
+      baseRevision: 1,
+    });
+
+    expect(regraded.response.status).toBe(200);
+
+    const after = await prisma.exam.findUniqueOrThrow({
+      where: { id: submitted.examId },
+      select: {
+        publishedById: true,
+        closedById: true,
+        publishedAt: true,
+        closedAt: true,
+      },
+    });
+
+    expect(after).toEqual(before);
+  });
+});
+
 describe("Lazy sweep", () => {
   it("#29 lazy sweep finalizes at most 25 expired attempts per request", async () => {
     const exam = await createPublishedExam({

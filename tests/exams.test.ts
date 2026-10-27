@@ -656,6 +656,24 @@ describe("POST /api/exams/[id]/publish", () => {
     expect(rows.every((row) => row.snapshotJson !== null)).toBe(true);
   });
 
+  it("publish mencatat publishedById sebagai audit aktor", async () => {
+    const examId = await publishReadyExam(teacher);
+
+    const row = await prisma.exam.findUniqueOrThrow({
+      where: { id: examId },
+      select: { publishedById: true, publishedAt: true, closedById: true },
+    });
+    const detail = await getExamAs(teacher, examId);
+    const publishedBy = detail.body.publishedBy as { id: string; name: string };
+
+    expect(row.publishedById).toBe(teacher.id);
+    expect(row.publishedAt).toBeTruthy();
+    expect(row.closedById).toBeNull();
+    expect(publishedBy.id).toBe(teacher.id);
+    expect(publishedBy.name).toBe(teacher.name);
+    expect(detail.body.closedBy).toBeNull();
+  });
+
   it("publish ulang ditolak → 400", async () => {
     const examId = await publishReadyExam(teacher);
     const { response } = await publishAs(teacher, examId);
@@ -756,6 +774,30 @@ describe("Close and delete", () => {
     const second = await closeAs(teacher, examId);
 
     expect(second.response.status).toBe(400);
+  });
+
+  it("close mencatat closedById sebagai audit aktor", async () => {
+    const examId = await publishReadyExam(teacher);
+    const { response, body } = await closeAs(teacher, examId);
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("CLOSED");
+
+    const row = await prisma.exam.findUniqueOrThrow({
+      where: { id: examId },
+      select: {
+        closedById: true,
+        closedAt: true,
+        publishedById: true,
+      },
+    });
+    const closedBy = body.closedBy as { id: string; name: string };
+
+    expect(row.closedById).toBe(teacher.id);
+    expect(row.closedAt).toBeTruthy();
+    expect(row.publishedById).toBe(teacher.id);
+    expect(closedBy.id).toBe(teacher.id);
+    expect(closedBy.name).toBe(teacher.name);
   });
 
   it("DELETE draft → 200 dan exam question cascade", async () => {

@@ -39,6 +39,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
       data: {
         status: "CLOSED",
         closedAt: new Date(),
+        closedById: user.id,
       },
     });
 

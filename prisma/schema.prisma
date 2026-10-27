@@ -70,6 +70,8 @@ model User {
   questions      Question[]
   importJobs     ImportJob[]
   exams          Exam[]
+  publishedExams Exam[]    @relation("ExamPublisher")
+  closedExams    Exam[]    @relation("ExamCloser")
   attempts       Attempt[]
   gradedAnswers  Answer[]  @relation("AnswerGrader")
   gradedAttempts Attempt[] @relation("AttemptGrader")
@@ -222,13 +224,17 @@ model Exam {
   status           ExamStatus @default(DRAFT)
   publishedAt      DateTime?
   closedAt         DateTime?
+  publishedById    String?
+  closedById       String?
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
-  subject   Subject        @relation(fields: [subjectId], references: [id], onDelete: Restrict)
-  owner     User           @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  questions ExamQuestion[]
-  attempts  Attempt[]
+  subject     Subject        @relation(fields: [subjectId], references: [id], onDelete: Restrict)
+  owner       User           @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  publishedBy User?          @relation("ExamPublisher", fields: [publishedById], references: [id], onDelete: SetNull)
+  closedBy    User?          @relation("ExamCloser", fields: [closedById], references: [id], onDelete: SetNull)
+  questions   ExamQuestion[]
+  attempts    Attempt[]
 
   @@index([ownerId, createdAt])
   @@index([subjectId])

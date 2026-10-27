@@ -61,6 +61,8 @@ type ReportDetailBody = {
     title: string;
     token: string | null;
     status: ExamStatus;
+    publishedBy: { id: string; name: string } | null;
+    closedBy: { id: string; name: string } | null;
   };
   stats: {
     totalAttempts: number;
@@ -362,6 +364,23 @@ describe("Gate 1 — aggregation correctness", () => {
     expect(body.stats.graded.avgPercentage).toBe(40);
     expect(body.stats.histogramTotal).toBe(5);
     expect(body.attempts.total).toBe(8);
+  });
+
+  it("R1b exam legacy tanpa audit aktor → publishedBy/closedBy null", async () => {
+    const exam = await createExam(teacherA.id);
+    const [student] = await createStudents(1, "XII IPA 1");
+
+    await createAttempt(exam.id, student.id, {
+      status: "GRADED",
+      totalScore: 70,
+      maxScore: 100,
+    });
+
+    const { response, body } = await fetchDetail(exam.id);
+
+    expect(response.status).toBe(200);
+    expect(body.exam.publishedBy).toBeNull();
+    expect(body.exam.closedBy).toBeNull();
   });
 
   it("R2 histogram 0%/50%/100% → [1,0,1,0,1] dan sum = GRADED count", async () => {

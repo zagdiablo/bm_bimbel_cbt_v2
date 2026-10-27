@@ -39,6 +39,7 @@ import {
   listReportClassrooms,
 } from "@/lib/reports/query";
 import type { ReportDetailQuery } from "@/lib/reports/types";
+import { normalizeSearchParams } from "@/lib/search-params";
 import {
   reportDetailQuerySchema,
   type ReportDetailQueryInput,
@@ -47,6 +48,7 @@ import {
 import { ExamStatusBadge } from "../../exams/_components/status-badge";
 import { ReportExportButtons } from "./_components/export-buttons";
 import { ReportAttemptsFilterBar } from "./_components/report-attempts-filter-bar";
+import { ReportTabs } from "./_components/report-tabs";
 import { ScoreHistogram } from "./_components/score-histogram";
 
 export const metadata: Metadata = {
@@ -54,25 +56,6 @@ export const metadata: Metadata = {
 };
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-
-function normalizeParams(
-  raw: Record<string, string | string[] | undefined>,
-): Record<string, string> {
-  const entries: [string, string][] = [];
-
-  for (const [key, value] of Object.entries(raw)) {
-    if (typeof value === "string" && value !== "") {
-      entries.push([key, value]);
-      continue;
-    }
-
-    if (Array.isArray(value) && value[0]) {
-      entries.push([key, value[0]]);
-    }
-  }
-
-  return Object.fromEntries(entries);
-}
 
 function buildHref(
   examId: string,
@@ -137,7 +120,7 @@ export default async function ReportDetailPage({
 
   const rawParams = await searchParams;
   const parsed = reportDetailQuerySchema.safeParse(
-    normalizeParams(rawParams),
+    normalizeSearchParams(rawParams),
   );
   const query: ReportDetailQuery = parsed.success
     ? parsed.data
@@ -194,6 +177,8 @@ export default async function ReportDetailPage({
         </div>
       </div>
 
+      <ReportTabs examId={examId} />
+
       <Card>
         <CardContent className="grid gap-4 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
           <div>
@@ -220,6 +205,24 @@ export default async function ReportDetailPage({
               Hasil ke siswa
             </p>
             <p>{exam.showResult ? "Ditampilkan" : "Disembunyikan"}</p>
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Dipublikasikan
+            </p>
+            <p>{formatWib(exam.publishedAt)}</p>
+            <p className="text-muted-foreground">
+              oleh {exam.publishedBy?.name ?? "—"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Ditutup
+            </p>
+            <p>{formatWib(exam.closedAt)}</p>
+            <p className="text-muted-foreground">
+              oleh {exam.closedBy?.name ?? "—"}
+            </p>
           </div>
         </CardContent>
       </Card>

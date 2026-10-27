@@ -179,6 +179,8 @@ export async function getExamForReport(
       closedAt: true,
       subject: { select: subjectSelect },
       owner: { select: { id: true, name: true } },
+      publishedBy: { select: { id: true, name: true } },
+      closedBy: { select: { id: true, name: true } },
     },
   });
 
@@ -199,6 +201,8 @@ export async function getExamForReport(
     showResult: exam.showResult,
     publishedAt: exam.publishedAt?.toISOString() ?? null,
     closedAt: exam.closedAt?.toISOString() ?? null,
+    publishedBy: exam.publishedBy,
+    closedBy: exam.closedBy,
   };
 }
 

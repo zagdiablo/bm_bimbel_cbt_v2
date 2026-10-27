@@ -101,7 +101,7 @@ export function DashboardSidebar({ role }: { role: Role }) {
       </nav>
 
       <div className="border-t p-4 text-xs text-muted-foreground">
-        Fase 8 &middot; Laporan &amp; Export
+        Fase 9 &middot; Analytics &amp; Release
       </div>
     </aside>
   );

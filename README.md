@@ -1,6 +1,6 @@
 # CBT App
 
-Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 4**: fondasi auth/RBAC, **Bank Soal CRUD** (5 tipe soal, filter, pencarian, soft-delete), **import soal XLSX/DOCX/PDF** dengan preview sebelum commit, serta **export bank soal ke XLSX/PDF**. Workspace guru juga bisa diakses ADMIN.
+Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 9**: fondasi auth/RBAC, Bank Soal CRUD + import/export, manajemen ujian dengan snapshot & token, pelaksanaan ujian server-authoritative, penilaian essay/short-answer, laporan & export hasil, serta **analisis butir soal** dan audit trail publish/close. Workspace guru juga bisa diakses ADMIN.
 
 ## Prasyarat
 
@@ -47,6 +47,8 @@ Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada d
 | `NEXT_PUBLIC_APP_URL` | URL publik aplikasi, ikut didaftarkan sebagai trusted origin |
 
 `SHADOW_DATABASE_URL` memakai database terpisah `cbt_shadow` karena role `cbt_user` pada environment lokal tidak memiliki izin `CREATEDB`. Ini hanya dipakai oleh `prisma migrate dev`; production tetap memakai `prisma migrate deploy`.
+
+Untuk production, lihat **Deployment & Production Checklist** dan [`SECURITY.md`](SECURITY.md). Jangan commit `.env` dan jangan menjalankan seed/reset di production.
 
 Jika `cbt_shadow` belum ada, buat sekali dengan user PostgreSQL yang punya izin `CREATEDB`:
 
@@ -242,7 +244,7 @@ Halaman edit menormalkan kembali baris tersebut lewat `fromStoredOptions()`, jad
 
 ### Keputusan default
 
-- **Mata pelajaran bersifat bersama.** TEACHER maupun ADMIN dapat memilih semua subject; kepemilikan soal tetap pada `ownerId` soal. CRUD subject baru ada di Fase 9.
+- **Mata pelajaran bersifat bersama.** TEACHER maupun ADMIN dapat memilih semua subject; kepemilikan soal tetap pada `ownerId` soal. CRUD subject belum ada; kandidat Roadmap Fase 11.
 - **PATCH = full replace.** Lebih sederhana dan aman untuk opsi: hapus opsi lama + buat opsi baru dalam satu `prisma.$transaction`, sehingga tidak bentrok dengan `@@unique([questionId, label])`.
 - **ADMIN mengedit soal guru** tetap mempertahankan `ownerId` guru tersebut.
 - **Soft-delete** dipilih agar soal yang sudah dipakai ujian tidak hilang; belum ada UI restore (lihat utang teknis).
@@ -773,10 +775,115 @@ Sheet XLSX `results`, header tetap:
 ### Keputusan default dan tech debt
 
 - **Tanpa KKM/passing grade.** KKM biasanya milik mapel/kelas, bukan exam; perlu kolom baru dan UI pengaturan.
-- **Tanpa analisis per soal** (difficulty/discrimination index) → Fase 9.
+- **Analisis per soal tersedia sejak Fase 9** (`/teacher/reports/[examId]/analytics`): p-value, D-index, distribusi, skip rate. Lihat §Analisis Butir Soal.
 - **Tanpa lazy sweep di laporan.** Attempt `IN_PROGRESS` yang sudah lewat expiry tetap tampil apa adanya sampai ada request grading/submit yang menyelesaikannya.
 - `showResult = false` tidak memblokir laporan guru; kebijakan itu hanya untuk tampilan siswa.
 - Tabel attempt tidak pernah men-select `Answer`, `snapshotJson`, atau kolom order; payload hanya metadata + skor.
+
+## Analisis Butir Soal (Fase 9)
+
+Halaman: `/teacher/reports/[examId]/analytics` (tab **Analisis Butir** di detail laporan).
+API: `GET /api/reports/[examId]/analytics?type=ESSAY&difficulty=HARD`.
+
+### Sumber data
+
+- Hanya `Attempt.status = GRADED` dengan `totalScore` tidak null.
+- Snapshot `ExamQuestion.snapshotJson` adalah sumber tipe soal, teks, opsi, dan kunci — bukan bank soal live.
+- Attempt `SUBMITTED`/`IN_PROGRESS` tidak dihitung; UI menampilkan jumlah yang menunggu penilaian.
+- Siswa yang tidak menjawab tidak punya row `Answer`; ini dihitung sebagai **skip**.
+
+### Metrik
+
+| Metrik | Formula | Kategori |
+|---|---|---|
+| Difficulty Index (p-value) | `correct / gradedTotal` | Mudah `> 0.70`; Sedang `0.30–0.70`; Sulit `< 0.30` |
+| Discrimination Index (D) | `p_high - p_low` | Baik `> 0.30`; Cukup `0.10–0.30`; Buruk `< 0.10` |
+| Skip rate | `(gradedTotal - answered) / gradedTotal` | — |
+
+Aturan penting:
+
+- **D-index hanya dihitung bila sample ≥ 10 attempt GRADED.** Di bawah itu D = `null` (bukan 1 attempt mewakili 100% group). UI menampilkan tooltip.
+- Kelompok atas/bawah memakai **27%** dengan `floor` (`n=20 → 5`, `n=10 → 2`), tanpa overlap.
+- Ranking D-index memakai **`objectiveScore`** (jumlah skor soal non-ESSAY), bukan `totalScore`. Skor esai yang subjektif tidak boleh menggeser kelompok untuk soal objektif.
+- `n < 2` tidak mungkin terjadi setelah aturan sample ≥ 10.
+- **ESSAY tidak dihitung D-index**, tetapi tetap muncul di distribusi (Skor > 0 / Skor 0 / Tidak dijawab) dan p-value (`score > 0`).
+- `SHORT_ANSWER` memakai `Answer.isCorrect`; skor parsial dari override guru tetap dianggap tidak benar untuk p-value/D.
+- `MULTIPLE_CHOICE`: persentase tiap label terhadap seluruh attempt; total bisa **> 100%** dan UI memberi catatan.
+- Analisis memakai maksimal **5000 attempt** teratas (`ANALYTICS_MAX_ATTEMPTS`) untuk ranking. Jika terpotong, muncul warning `sample_truncated_at_5000` dan `sample.truncated = true`.
+- Sample `10–29` diberi info “interpretasi hati-hati”; `≥ 30` dianggap reliable.
+- Snapshot rusak tidak membuat halaman 500: item ditandai `integrityError` dan warning `invalid_snapshot`.
+- Teks soal di API dipotong 500 karakter (`questionTextTruncated`).
+
+Kode: `lib/analytics/{stats,query,types,labels}.ts`, route `app/api/reports/[examId]/analytics/route.ts`, UI `app/(dashboard)/teacher/reports/[examId]/analytics/`.
+
+## Audit Trail Publish/Close (Fase 9)
+
+- `Exam.publishedById`/`closedById` (nullable, `onDelete: SetNull`) mencatat aktor terakhir publish/close.
+- Publish mengisi `publishedById` di transaksi yang sama dengan `publishedAt`; close mengisi `closedById` bersama `closedAt`.
+- Exam lama (sebelum migrasi `20261027090528_add_exam_audit_fields`) tetap valid dengan nilai `null`; UI menampilkan `—`.
+- Detail ujian dan detail laporan menampilkan nama publisher/closer.
+- Audit ini **bukan riwayat penuh**: regrade/publish ulang tidak menyimpan histori. Log audit penuh tetap tech debt (lihat Roadmap).
+
+## Deployment & Production Checklist
+
+Prasyarat: Node.js `>=22 <24`, PostgreSQL, npm.
+
+### Environment
+
+| Variabel | Production |
+|---|---|
+| `DATABASE_URL` | PostgreSQL utama, gunakan `sslmode=require` bila DB terpisah |
+| `SHADOW_DATABASE_URL` | **Hanya development**; tidak wajib di production |
+| `BETTER_AUTH_SECRET` | Acak ≥ 32 byte (`openssl rand -hex 32`); rotasi = semua sesi logout |
+| `BETTER_AUTH_URL` | URL publik HTTPS, mis. `https://cbt.sekolah.id` |
+| `NEXT_PUBLIC_APP_URL` | URL publik yang sama; trusted origin better-auth |
+
+Jangan commit `.env`. `.env.example` hanya placeholder.
+
+### Urutan deploy
+
+1. Backup database (`pg_dump`) dan pastikan restore sudah diuji.
+2. `npm ci` (gunakan lockfile).
+3. `npx prisma migrate deploy` — **bukan** `migrate dev`. Migrasi Fase 9 additive/nullable, aman untuk rolling deploy.
+4. `npm run build`.
+5. `npm start` (atau process manager/container).
+6. Smoke check: login 3 role, publish ujian, join siswa, submit, nilai esai, buka laporan, export XLSX/PDF, buka analytics.
+7. Verifikasi `publishedById`/`closedById` terisi setelah publish/close.
+
+### Larangan
+
+- **Jangan** menjalankan `npm run db:seed` atau `npm run db:reset` di production. Seed membuat akun demo dan me-reset attempt `demo-exam-1`; reset menghapus seluruh schema.
+- Jangan menjalankan `prisma migrate dev` di production (butuh shadow DB dan bisa reset).
+- Jangan mengekspos `uploads/` ke publik; direktori ini menyimpan file import sementara.
+
+### Operasional
+
+- **Backup**: harian penuh + WAL/PITR bila tersedia; retensi minimal 7–30 hari. Uji restore berkala.
+- **Uploads**: `uploads/imports` bersifat ephemeral. Sediakan cleanup startup/cron (lihat P0) atau object storage.
+- **Monitoring**: log aplikasi (stdout), error tracking, uptime check `/login` atau `/api/auth/get-session`, alert untuk 5xx dan disk.
+- **HTTPS**: wajib. Cookie `Secure` aktif otomatis bila `BETTER_AUTH_URL` https.
+- **Least privilege**: user DB aplikasi tidak perlu `CREATEDB`/superuser.
+- **Rotasi secret**: mengganti `BETTER_AUTH_SECRET` membatalkan semua sesi; lakukan saat maintenance.
+- **Dependency**: review `npm audit` tiap rilis (lihat §Dependency Audit).
+- Detail keamanan: lihat [`SECURITY.md`](SECURITY.md).
+
+## Dependency Audit (Oktober 2026)
+
+Dijalankan 27 Oktober 2026 dengan npm 11.19.1 (`npm audit`). Ringkasan: **10 advisory — 2 critical, 6 high, 2 moderate**. Tidak ada perbaikan dependency di Fase 9; hanya dokumentasi.
+
+| Paket | Severity | Lingkup | Advisory utama | Fix | Rekomendasi |
+|---|---|---|---|---|---|
+| `vitest` / `tinypool` / `@vitest/mocker` | critical / moderate | dev/test | Prototype pollution → RCE di worker; path traversal mock | Vitest 5 (major) | Tidak ikut runtime. Upgrade di fase tooling. |
+| `prisma` / `@prisma/config` / `deepmerge-ts` | high | dev/build | Stack exhaustion saat merge object rekursif | Prisma 7 (major) | CLI build-time. Upgrade terencana. |
+| `next` / `postcss` | moderate / high | runtime/build | XSS/stringify & source map traversal di PostCSS | Next 16 (major) | Tidak ada input CSS user. Upgrade terencana. |
+| `xlsx@0.18.5` | high | runtime | Prototype pollution + ReDoS | **Tidak ada** | Akses TEACHER/ADMIN, file ≤10MB, export ≤2000. Rencana migrasi ExcelJS. |
+| `zod@3.25` | high | runtime | Memory exhaustion pada koleksi besar | Zod 4 (major) | Semua schema sudah memakai `.max()`; upgrade terencana. |
+
+Catatan:
+
+- `npm audit` pada npm 11 tetap menampilkan dev dependency; klasifikasi runtime vs dev di atas dilakukan manual berdasarkan `package.json` dan `npm ls --omit=dev`.
+- Advisory `next/postcss` dan `xlsx` adalah yang paling relevan untuk runtime; keduanya sudah dimitigasi dengan pembatasan akses/ukuran.
+- Jangan menjalankan `npm audit fix --force` tanpa review: perintah itu melakukan upgrade mayor (Next 16, Prisma 7, Vitest 5, Zod 4).
 
 ## Testing
 
@@ -888,7 +995,27 @@ Test memakai fixture unik dan cleanup berurutan `answers → attempts → examQu
 - Cap export (`EXPORT_MAX_ATTEMPTS`/`EXPORT_MAX_PDF_ATTEMPTS`) → `400` dengan pesan jelas.
 - Filter `classroom` ikut terbawa ke export (hanya baris kelas tersebut).
 
-Total **168 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams + 44 attempts + 29 grading + 22 reports + 7 report-export).
+`tests/analytics-stats.test.ts` menguji formula analisis butir secara pure:
+
+- `computeDifficultyIndex` + boundary kategori 0.70/0.30/0.71/0.29.
+- `extremeGroupSize` → `null` untuk `< 10`, `floor(27%)` (`10 → 2`, `20 → 5`, `30 → 8`), `pickExtremeGroups` tanpa overlap.
+- `computeDiscrimination` + klasifikasi good/fair/poor (termasuk negatif).
+- `computeSkipRate`, `buildSampleWarnings`, `shouldTruncate` (cap 5000).
+- `buildDistribution`: zero-fill opsi, multi-select >100%, bucket short-answer/essay, label tak dikenal.
+
+`tests/analytics.test.ts` menguji API analytics dengan database nyata:
+
+- **A1/A5:** 5 GRADED, 3 benar, 2 tidak jawab → p-value `0.6`, skip `0.4`, D `null`.
+- **A2/A3:** 20 GRADED → D `1.0` (Baik), kelompok high/low 5/5; ESSAY `D = null` tetapi distribusi tetap terisi.
+- **A4:** sample `<10` → warning `sample_too_small`; exam tanpa GRADED → `no_graded_attempts` dan metrik null.
+- **A8+:** STUDENT `403`, TEACHER lain `404`, ADMIN `200`; exam legacy dengan audit `null` tetap `200`.
+- **A14:** ranking D-index memakai `objectiveScore` — skor esai tinggi pada attempt berobjektif rendah tidak menggeser kelompok, D tetap `1.0` (bukan `0`).
+
+`tests/e2e-auth.test.ts` (A10a) menguji auth nyata: register → login → cookie `HttpOnly`/`SameSite=Lax` + `redirectTo`.
+
+`tests/e2e-journey.test.ts` (A10b) menguji journey backend penuh: publish 5 soal → join siswa → jawab → submit (`SUBMITTED`) → guru nilai esai (`GRADED`) → report (`avgScore 7`) → export XLSX (baris + skor) → export PDF (`%PDF-`) → analytics (p-value per soal, warning sample) → close exam + audit aktor.
+
+Total **184 test** (7 auth + 9 questions + 10 import + 6 export + 36 exams + 44 attempts + 30 grading + 23 reports + 7 report-export + 5 analytics-stats + 5 analytics + 2 e2e).
 
 ## Verifikasi Fase 1
 
@@ -1044,6 +1171,27 @@ Dijalankan pada runtime Node 24-compatible:
 - Gate 4: grep payload detail → `isCorrect` 0, `explanation` 0, `snapshotJson` 0, `questionOrder` 0, `optionOrder` 0, `"answers"` 0; token 0 match di payload list.
 - Fixture verifikasi dihapus kembali (`attempts/exams/users`), `demo-exam-1` kembali 0 attempt.
 
+## Verifikasi Fase 9
+
+Dijalankan pada Node 22.23.4 (npm 11.19.1), 27 Oktober 2026.
+
+- **Schema/audit**: migrasi `20261027090528_add_exam_audit_fields` menambah `publishedById`/`closedById` + FK `ON DELETE SET NULL`; publish/close mengisi aktor di transaksi/statement yang sama; exam legacy (`null`) tetap `200` dan UI menampilkan `—`.
+- **Fase 5 regression**: `npx vitest run tests/exams.test.ts` → **36 lolos** (34 test lama + 2 audit publisher/closer).
+- **Full suite**: `npx vitest run --reporter=verbose` → **184 test lolos** (13 file).
+- **Static gates**: `npx tsc --noEmit` lolos; `npm run lint` 0 error/0 warning; `npm run build` lolos dan mendaftarkan `/teacher/reports/[examId]/analytics` + `/api/reports/[examId]/analytics`.
+- **Analytics correctness**:
+  - 5 GRADED (3 benar) → p-value `0.6`, kategori `MEDIUM`, `skipRate 0`, D `null`, warning `sample_too_small`.
+  - 20 GRADED (5 benar) → p-value `0.25` (`HARD`), D `1.0` (`GOOD`), kelompok high `5/5`, low `0/5`.
+  - ESSAY → D `null`, distribusi `scored:10 / zero:10 / skipped:0`.
+  - `publish/close` audit terlihat di payload analytics (`publishedBy: Guru Demo`).
+- **Hardening**:
+  - `extremeGroupSize(9) = null`, `(10) = 2`, `(20) = 5`.
+  - Ranking D memakai `objectiveScore`; test A14 memberi skor esai tinggi pada attempt berobjektif rendah dan tetap menghasilkan D `1.0` (bukan `0`).
+  - `shouldTruncate(5000) = false`, `shouldTruncate(5001) = true` (unit test A15; tidak meng-insert 5001 row).
+  - E2E dipecah: `tests/e2e-auth.test.ts` (auth real, timeout 60s) + `tests/e2e-journey.test.ts` (journey penuh, timeout 30s).
+- **E2E journey**: publish 5 soal → join → jawab → submit (`SUBMITTED`) → nilai esai (`GRADED`, total 7/9) → report `avgScore 7` → XLSX baris siswa + `Total 7/Max 9` → PDF `%PDF-` → analytics p-value per soal → close + audit `closedById`.
+- **Bukti API langsung (curl)**: login `teacher@cbt.local`, `GET /api/reports/<examId>/analytics` → `200`; fixture 5 dan 20 attempt dibuat sementara lalu dihapus kembali.
+
 ## Struktur Saat Ini
 
 ```text
@@ -1088,7 +1236,13 @@ app/
       _components/report-filter-bar.tsx
       [examId]/page.tsx
       [examId]/_components/{report-attempts-filter-bar.tsx,
-                          score-histogram.tsx, export-buttons.tsx}
+                          report-tabs.tsx, score-histogram.tsx,
+                          export-buttons.tsx}
+      [examId]/analytics/page.tsx
+      [examId]/analytics/_components/{analytics-summary.tsx,
+                          analytics-filter-bar.tsx,
+                          item-analytics-table.tsx,
+                          response-distribution.tsx}
     student/
       page.tsx
       exams/
@@ -1141,6 +1295,7 @@ app/
       route.ts
       [examId]/route.ts
       [examId]/export/route.ts
+      [examId]/analytics/route.ts
     subjects/route.ts
   globals.css
   layout.tsx
@@ -1160,6 +1315,7 @@ lib/
   auth-helpers.ts
   prisma.ts
   roles.ts
+  search-params.ts
   utils.ts
   importers/{types.ts, validate.ts, blocks.ts, xlsx.ts, docx.ts, pdf.ts,
              index.ts, storage.ts, preview.ts, jobs.ts}
@@ -1171,8 +1327,10 @@ lib/
   grading/{constants.ts, late.ts, types.ts, recompute.ts, snapshot.ts,
             query.ts, service.ts}
   reports/{types.ts, labels.ts, stats.ts, query.ts}
+  analytics/{types.ts, labels.ts, stats.ts, query.ts}
   zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts, grading.ts,
-               report.ts}
+               report.ts, analytics.ts}
+SECURITY.md
 middleware.ts
 public/
   templates/{template-import-soal.xlsx, .docx, .pdf}
@@ -1188,6 +1346,10 @@ tests/
   grading.test.ts
   reports.test.ts
   report-export.test.ts
+  analytics-stats.test.ts
+  analytics.test.ts
+  e2e-auth.test.ts
+  e2e-journey.test.ts
   fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
   setup.ts
 prisma/
@@ -1209,7 +1371,7 @@ prisma/
 
 ### Export dan data soal
 
-- **Fallback `fromStoredOptions()` untuk `TRUE_FALSE`.** Jika data korup (kedua opsi `isCorrect = false`, atau label/tulisan “Benar” tidak dikenali), fungsi jatuh ke `correctAnswer: true`. Ini membuat soal yang rusak tampak valid di form edit dan di export. Perbaiki dengan validasi data atau error eksplisit di Fase 9.
+- **Fallback `fromStoredOptions()` untuk `TRUE_FALSE`.** Jika data korup (kedua opsi `isCorrect = false`, atau label/tulisan “Benar” tidak dikenali), fungsi jatuh ke `correctAnswer: true`. Ini membuat soal yang rusak tampak valid di form edit dan di export. Belum diperbaiki; kandidat P2.
 - **Opsi lebih dari E terpotong saat export XLSX.** Template import hanya menyediakan `option_a`–`option_e`. Soal lama dengan lebih dari 5 opsi akan kehilangan opsi ke-6 dan seterusnya; soal seperti itu juga tidak bisa round-trip penuh. UI Bank Soal membatasi 5 opsi, tetapi schema API masih menerima 26.
 - **Export menahan seluruh hasil di memori.** XLSX memakai `XLSX.write()` dan PDF memakai `renderToBuffer()`; keduanya membangun buffer penuh sebelum response dikirim. Safety cap 2.000 soal membatasi risiko, tetapi export 2.000 soal PDF bisa lambat dan memakai memori besar. Streaming response/worker terpisah belum ada.
 - **Soft-delete Bank Soal belum punya UI restore/purge.** Baris tetap tersimpan dan hanya difilter lewat `deletedAt`; sediakan job pembersihan atau halaman arsip sebelum produksi.
@@ -1217,9 +1379,9 @@ prisma/
 
 ### Manajemen ujian
 
-- **Tidak ada clone/duplikat ujian.** Salah ketik judul atau jadwal setelah publish tidak bisa diperbaiki; guru harus membuat ujian baru dari nol. Pertimbangkan fitur duplikat di Fase 9.
+- **Tidak ada clone/duplikat ujian.** Salah ketik judul atau jadwal setelah publish tidak bisa diperbaiki; guru harus membuat ujian baru dari nol. Kandidat P2 Roadmap.
 - **Tidak ada unpublish (PUBLISHED → DRAFT).** Setelah publish, konten dan metadata ujian immutable. Ini disengaja untuk integritas snapshot, tetapi konsekuensinya typo setelah publish tidak bisa diperbaiki.
-- **Tidak ada audit trail aktor.** `publishedAt`/`closedAt` hanya menyimpan waktu, bukan **siapa** yang melakukan publish/close. Tambahkan audit log sebelum produksi.
+- **Audit hanya menyimpan aktor terakhir.** Sejak Fase 9, `publishedById`/`closedById` mencatat siapa yang publish/close, tetapi bukan riwayat lengkap. Belum ada audit log untuk perubahan metadata soal/ujian atau regrade berulang.
 - **Token tidak bisa di-regenerate/revoke.** Token tetap tersimpan setelah ujian ditutup. Kalau token bocor, belum ada tombol membuat token baru atau mencabut token lama.
 - **Tidak ada rate limit khusus endpoint exam/publish.** Akses tetap dibatasi TEACHER/ADMIN, tetapi percobaan create/publish/publish-retry (termasuk retry token collision) belum dibatasi.
 - **Pencarian judul memakai `contains`/ILIKE tanpa index.** `GET /api/exams?search=` memakai `contains` case-insensitive pada `exams.title`; B-tree tidak membantu pola `%...%`. Untuk data besar, tambahkan `pg_trgm` + GIN index pada `title`.
@@ -1236,7 +1398,7 @@ prisma/
 - **`receivedAt` hanya untuk audit.** UI siswa menampilkan `submittedAt` (waktu efektif), bukan `receivedAt`. Teacher view Fase 7 sebaiknya membaca `receivedAt` untuk mendeteksi submit telat.
 - **Short answer rawan false negative.** Normalisasi hanya trim/lowercase/collapse whitespace + NFKC; `"3,14"` vs `"3.14"`, satuan, dan sinonim tidak ditangani. Fase 7 perlu koreksi manual per jawaban.
 - **Result page summary-only.** Belum ada review per soal, kunci jawaban, atau explanation untuk siswa. Ini disengaja agar kebijakan review ditentukan di Fase 7.
-- **`@@unique([examId, studentId])` mengunci retake.** Retake Fase 9 memerlukan `attemptNumber` + migrasi unique, bukan hard-delete attempt (histori nilai hilang).
+- **`@@unique([examId, studentId])` mengunci retake.** Retake memerlukan `attemptNumber` + migrasi unique (P1 Roadmap), bukan hard-delete attempt (histori nilai hilang).
 - **Anti-cheat belum ada.** `tabSwitchCount` sengaja ditunda. Tidak ada deteksi blur, copy/paste, atau watermark soal.
 - **Data attempt korup tidak bisa direparasi lewat UI.** `questionOrder`/`optionOrder` invalid menghasilkan `500` eksplisit; perbaikan harus lewat SQL/admin tool.
 - **`selectedLabels` tidak punya CHECK constraint.** Validasi label ada di aplikasi, bukan database. Query/report Fase 8 harus tetap defensif.
@@ -1245,7 +1407,7 @@ prisma/
 ### Penilaian essay
 
 - **Feedback per esai belum ada.** Fase 7 hanya menyimpan `score`; guru belum bisa meninggalkan komentar. Tambahkan `Answer.feedback String? @db.Text` di Fase 8/9.
-- **Audit hanya menyimpan aktor terakhir.** `Answer.gradedById`/`gradedAt` dan `Attempt.gradedById` bukan riwayat perubahan. Regrade berulang hanya menyisakan aktor terakhir; audit log penuh ditunda ke Fase 9.
+- **Audit hanya menyimpan aktor terakhir.** `Answer.gradedById`/`gradedAt` dan `Attempt.gradedById` bukan riwayat perubahan. Regrade berulang hanya menyisakan aktor terakhir; audit log penuh belum ada (P1 Roadmap).
 - **Short answer dapat dikoreksi TEACHER meski `GRADED`.** Ini pengecualian sengaja karena normalisasi short answer heuristik (lihat tech debt Fase 6). Nilai esai tetap terkunci untuk TEACHER setelah `GRADED`.
 - **Placeholder Answer untuk essay kosong.** Baris `Answer` buatan grading memakai `textAnswer: null`, `selectedLabels: []`, dan `answeredAt = submittedAt`. Query report Fase 8 harus memperlakukan baris ini sebagai “tidak dijawab”, bukan jawaban siswa.
 - **Tidak ada tombol finalize eksplisit.** Attempt otomatis `GRADED` saat esai terakhir disimpan; UI memakai dialog konfirmasi. Jika guru salah memasukkan nilai terakhir, koreksi harus lewat admin.
@@ -1253,6 +1415,21 @@ prisma/
 - **Detail grading memuat seluruh essay sekaligus.** 200 soal × 20.000 karakter bisa menghasilkan payload besar; pagination essay belum ada.
 - **Tidak ada CHECK constraint `score >= 0` / `score <= points`.** Validasi hanya di aplikasi; query/report harus tetap defensif.
 - **Tidak ada rate limit endpoint grading.** Akses sudah dibatasi TEACHER/ADMIN dan scope exam, tetapi belum ada rate limit per user.
+
+### Analisis butir soal (Fase 9)
+
+- **D-index tidak dihitung untuk sample < 10.** Ini disengaja agar satu attempt tidak mewakili 100% kelompok. Kelas kecil hanya mendapat p-value + distribusi.
+- **D-index memakai ranking `objectiveScore`, bukan `totalScore`.** Skor esai tidak menggeser kelompok, tetapi attempt dengan soal objektif sedikit tetap lebih noisy.
+- **Cap 5000 attempt.** Di atas itu, ranking/D-index memakai 5000 attempt teratas dan muncul warning `sample_truncated_at_5000`; p-value/distribusi tetap dihitung dari seluruh attempt GRADED.
+- **Analisis dihitung ulang setiap request.** Belum ada cache/materialized view; exam dengan ribuan attempt dan 200 soal bisa menjadi query berat.
+- **ESSAY hanya punya p-value (`score > 0`) dan distribusi.** Tidak ada D-index karena skor subjektif; guru perlu membaca rubrik.
+- **Short-answer parsial dianggap tidak benar untuk p-value/D.** Override guru yang memberi skor sebagian tidak menaikkan `correctCount`.
+- **Multi-select tidak dinormalisasi.** Persentase tiap label bisa berjumlah >100%; UI memberi catatan.
+- **Tidak ada export analytics.** Tabel hanya tersedia di UI; export XLSX/PDF khusus item analysis belum ada.
+- **Tidak ada analisis tren antar-ujian.** Metrik hanya untuk satu exam; perbandingan antar kelas/periode butuh desain baru.
+- **Snapshot rusak ditampilkan sebagai item tanpa metrik** (`integrityError`), bukan 500. Perbaikan data tetap manual.
+- **Metrik adalah Classical Test Theory (CTT), bukan IRT.** Belum ada parameter a/b/c, reliability (KR-20/alpha), atau distractor analysis formal.
+- **Analytics tetap bisa dibuka untuk exam `CLOSED`** (konsisten dengan laporan Fase 8).
 
 ### Dependensi dan tooling
 
@@ -1269,13 +1446,60 @@ prisma/
 - `classroom` diisi lewat seed/admin; belum ada UI pengelolaan.
 - `@radix-ui/react-alert-dialog` dipakai untuk konfirmasi hapus dan konfirmasi simpan esai terakhir (komponen shadcn `alert-dialog`); tidak ada dependensi UI lain yang berubah.
 
+## Known Limitations (Release)
+
+Prioritas untuk go-live. Detail teknis ada di **Known Issues & Tech Debt** di atas; tabel ini hanya keputusan rilis.
+
+### P0 — wajib sebelum production
+
+| Item | Kenapa P0 | Status Fase 9 |
+|---|---|---|
+| Rate limit login, join token, publish, grading | Brute force/abuse; belum ada Redis/Upstash | **Ditunda**, terdokumentasi |
+| Rotasi/revoke token ujian | Token bocor tidak bisa diganti setelah publish | **Ditunda** |
+| Cleanup upload startup/cron | File orphan di `uploads/imports` setelah restart | **Ditunda** |
+| Backup + restore drill | Kehilangan data ujian/nilai tidak bisa dipulihkan | Prosedur di atas; eksekusi ops |
+| Monitoring/alert 5xx, disk, uptime | Gangguan tidak terdeteksi | **Belum ada** |
+| HTTPS + secret management | Cookie `Secure`, session signing | Checklist di atas |
+| Jangan seed/reset di production | Seed membuat akun demo & menghapus attempt demo | Wajib dipatuhi |
+| Review advisory `xlsx`/`zod`/`next` | Risiko runtime | Dimiliki, dimitigasi sebagian |
+
+### P1 — segera setelah rilis
+
+- Upgrade Zod 4, Next 16, Prisma 7, Vitest 5 (major, perlu branch terpisah).
+- Migrasi `xlsx` → ExcelJS (menghilangkan advisory tanpa fix).
+- Index `pg_trgm` untuk pencarian judul ujian/soal.
+- Retake dengan `attemptNumber` + migrasi unique.
+- Export analisis butir (XLSX).
+- Batch override short-answer.
+- Audit log penuh (bukan hanya aktor terakhir).
+
+### P2 — nice to have
+
+- Unit test `DELETE`/expiry import job.
+- Feedback per esai (`Answer.feedback`).
+- Clone/duplikat exam.
+- Student per-question review (tetap menghormati `showResult`).
+- Anti-cheat (tab switch, copy/paste, session lock).
+- Timezone per sekolah.
+- Streaming export untuk dataset besar.
+- Scheduler finalisasi attempt expired (menggantikan lazy sweep).
+
+## Roadmap
+
+- **Fase 10 — Production Hardening**: rate limit (Redis/Upstash), rotasi token, cleanup upload cron, health check + structured logging/Sentry, backup otomatis.
+- **Fase 11 — Fitur Akademik**: retake, KKM/passing grade, batch short-answer override, essay feedback, clone exam, analisis tren.
+- **Fase 12 — Dependency & Performance**: Zod 4, Next 16, Prisma 7, Vitest 5, ExcelJS, `pg_trgm`, streaming export, materialized analytics.
+- **Tidak dijadwalkan**: anti-cheat penuh, multi-timezone, IRT/parameter a-b-c, integrasi DAPODIK.
+
 ## Fase Berikutnya
 
-Fase 8 (laporan & export hasil) selesai. Fase berikutnya disarankan:
+Fase 9 (analytics, audit trail, E2E, release docs) selesai. Aplikasi siap deploy dengan catatan **P0** di atas. Fase berikutnya mengikuti **Roadmap**: production hardening lebih dulu, bukan fitur baru.
+
+Kandidat fitur yang tetap terbuka:
 - manajemen pengguna dan mata pelajaran (CRUD, import siswa/kelas),
 - KKM/passing grade per mapel/kelas + rekap kelulusan,
-- analisis butir soal (difficulty index, discrimination index) dari `Answer`,
 - feedback per esai (`Answer.feedback`) dan tombol finalize eksplisit,
 - audit log penuh untuk perubahan nilai/manual override,
 - tampilan hasil per soal untuk siswa (opsional, tetap menghormati `showResult`),
 - scheduler/cron untuk finalisasi attempt expired agar laporan tidak bergantung pada request grading.
+

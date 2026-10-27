@@ -82,6 +82,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
                 status: "PUBLISHED",
                 token,
                 publishedAt: now,
+                publishedById: user.id,
               },
             });
 

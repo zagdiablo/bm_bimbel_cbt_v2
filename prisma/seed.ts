@@ -221,6 +221,7 @@ async function seedDemoExam() {
       showResult: true,
       status: "PUBLISHED",
       publishedAt,
+      publishedById: teacher.id,
       closedAt: null,
     },
     create: {
@@ -237,6 +238,7 @@ async function seedDemoExam() {
       showResult: true,
       status: "PUBLISHED",
       publishedAt,
+      publishedById: teacher.id,
     },
   });
 
