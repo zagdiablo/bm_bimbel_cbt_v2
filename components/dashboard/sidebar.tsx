@@ -75,7 +75,7 @@ export function DashboardSidebar({ role }: { role: Role }) {
       </nav>
 
       <div className="border-t p-4 text-xs text-muted-foreground">
-        Fase 2 &middot; Bank Soal
+        Fase 3 &middot; Bank Soal + Import
       </div>
     </aside>
   );

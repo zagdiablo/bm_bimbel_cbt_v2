@@ -1,6 +1,6 @@
 # CBT App
 
-Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 2**: fondasi auth/RBAC dari Fase 1 ditambah **Bank Soal CRUD** (5 tipe soal, filter, pencarian, soft-delete) dengan workspace guru yang juga bisa diakses ADMIN.
+Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 3**: fondasi auth/RBAC, **Bank Soal CRUD** (5 tipe soal, filter, pencarian, soft-delete), dan **import soal XLSX/DOCX/PDF** dengan preview sebelum commit. Workspace guru juga bisa diakses ADMIN.
 
 ## Prasyarat
 
@@ -225,6 +225,7 @@ Tabel `question_options` selalu menjadi representasi akhir, termasuk untuk tipe 
 
 | Tipe | Baris `question_options` |
 |---|---|
+| `SINGLE_CHOICE` / `MULTIPLE_CHOICE` | satu baris per opsi (`A`–`E`), `isCorrect` sesuai kunci |
 | `TRUE_FALSE` | `A = "Benar"` dan `B = "Salah"`, salah satu `isCorrect` (sama seperti seed) |
 | `SHORT_ANSWER` | satu baris `KUNCI-1..n` per jawaban benar |
 | `ESSAY` | tidak ada baris |
@@ -247,6 +248,130 @@ Halaman edit menormalkan kembali baris tersebut lewat `fromStoredOptions()`, jad
 - **Soft-delete** dipilih agar soal yang sudah dipakai ujian tidak hilang; belum ada UI restore (lihat utang teknis).
 - **`pageSize` maksimal 100** untuk mencegah query besar dari client.
 - **Label opsi uppercase** agar konsisten dengan data seed.
+
+## Import Soal (Fase 3)
+
+Import tersedia untuk TEACHER dan ADMIN di `/teacher/questions/import`. Alurnya selalu **preview dulu, commit kemudian**. Tidak ada commit parsial: jika satu baris invalid, seluruh file harus diperbaiki dan diunggah ulang.
+
+### Format XLSX
+
+Sheet pertama bernama `questions` (jika tidak ada, sheet pertama dipakai). Baris 1 adalah header:
+
+| Kolom | Wajib | Keterangan |
+|---|---|---|
+| `subject_code` | ya | Kode mapel yang sudah ada, mis. `MTK` |
+| `type` | ya | `SINGLE_CHOICE`, `MULTIPLE_CHOICE`, `TRUE_FALSE`, `SHORT_ANSWER`, `ESSAY` |
+| `question` | ya | Teks soal |
+| `option_a` … `option_e` | untuk pilihan ganda | Diisi berurutan mulai A; maksimal 5 opsi |
+| `correct_answers` | sesuai tipe | Lihat tabel di bawah |
+| `points` | tidak | Default `1`, harus bilangan bulat 1–1000 |
+| `difficulty` | tidak | `EASY`, `MEDIUM`, `HARD`; default `MEDIUM` |
+| `explanation` | tidak | Pembahasan |
+
+Nilai `correct_answers`:
+
+| Tipe | Format | Contoh |
+|---|---|---|
+| `SINGLE_CHOICE` | satu label | `B` |
+| `MULTIPLE_CHOICE` | label dipisah koma | `A,C,D` |
+| `TRUE_FALSE` | boolean | `true` / `false` |
+| `SHORT_ANSWER` | dipisah pipa | 72 &#124; tujuh puluh dua |
+| `ESSAY` | kosong | — |
+
+Aturan tambahan XLSX:
+
+- `TRUE_FALSE`, `SHORT_ANSWER`, dan `ESSAY` tidak boleh mengisi kolom opsi.
+- `ESSAY` tidak boleh mengisi `correct_answers`.
+- Label jawaban harus ada di opsi dan tidak boleh duplikat.
+- Opsi harus berurutan; tidak boleh mengisi `option_c` tanpa `option_b`.
+- Baris kosong sepenuhnya dilewati.
+
+### Format DOCX/PDF
+
+Satu file DOCX/PDF memakai **satu mata pelajaran** yang dipilih di form upload. Format blok:
+
+```text
+1. Ibu kota Indonesia adalah ...
+   a. Bandung
+   b. Jakarta
+   c. Surabaya
+   d. Medan
+   Jawaban: B
+   Pembahasan: Jakarta adalah ibu kota Indonesia.
+   Poin: 2
+   Tingkat: EASY
+
+2. 7 adalah bilangan prima.
+   Jawaban: true
+   Pembahasan: 7 hanya habis dibagi 1 dan 7.
+   Poin: 1
+   Tingkat: MEDIUM
+```
+
+Metadata **case-insensitive**: `Tipe:`, `tipe:`, `TIPE:`; `Jawaban:`, `jawaban:`, `JAWABAN:`; begitu juga `Pembahasan:`, `Poin:`, dan `Tingkat:`.
+
+Inferensi tipe:
+
+| Kondisi | Tipe |
+|---|---|
+| `Tipe:` valid | Memakai nilai eksplisit |
+| `Jawaban: true/false/benar/salah` | `TRUE_FALSE` |
+| `Jawaban:` satu label opsi | `SINGLE_CHOICE` |
+| `Jawaban:` beberapa label dipisah koma | `MULTIPLE_CHOICE` |
+| `Tipe: SHORT_ANSWER` | `SHORT_ANSWER` |
+| `Tipe: ESSAY` | `ESSAY` |
+| Tanpa `Tipe:` dan tanpa `Jawaban:` | Error per soal |
+
+`SHORT_ANSWER` di DOCX/PDF memakai **prioritas, bukan merge**:
+
+1. Jika ada `Jawaban:` → gunakan hanya nilai pipe-separated.
+2. Jika ada `Jawaban:` dan opsi `a-e` sekaligus → error “Kontradiksi: gunakan Jawaban: ATAU opsi a-e, tidak keduanya”.
+3. Jika hanya ada opsi `a-e` → opsi dianggap variasi jawaban.
+4. Jika keduanya kosong → error “SHORT_ANSWER harus punya Jawaban: atau opsi a-e”.
+
+Untuk `ESSAY`, `Tipe: ESSAY` wajib karena tidak ada jawaban yang bisa dipakai untuk inferensi.
+
+### Keamanan dan batas file
+
+- Maksimal **10MB** dan **1.000 soal** per file.
+- Ekstensi, MIME, dan magic bytes harus cocok:
+  - XLSX/DOCX: ZIP (`PK`), MIME Open XML masing-masing;
+  - PDF: `%PDF-`, MIME `application/pdf`.
+- Nama file asli hanya disimpan untuk display. File di disk memakai `uploads/imports/<jobId>.<ext>` dengan nama acak dari id job.
+- Tidak ada kolom path file di database. File dihapus setelah commit, delete, atau expiry.
+- `PENDING_PREVIEW` kedaluwarsa setelah 1 jam. Expiry dicek lazy saat list/GET/commit; tidak ada cron di MVP.
+- File upload tidak pernah disajikan sebagai file publik.
+- Filesystem lokal dipakai untuk MVP. Jika deploy ke platform serverless dengan filesystem read-only, ganti `lib/importers/storage.ts` dengan object storage.
+
+### Template dan regenerasi
+
+Template tersedia di:
+
+- `/templates/template-import-soal.xlsx`
+- `/templates/template-import-soal.docx`
+- `/templates/template-import-soal.pdf`
+
+Regenerasi:
+
+```bash
+npm run templates:generate
+```
+
+Script `scripts/generate-templates.ts` membuat XLSX dengan SheetJS, lalu memakai LibreOffice (`libreoffice`/`soffice`) untuk DOCX dan PDF. LibreOffice harus tersedia di mesin yang menjalankan script; template hasil generate sudah di-commit sehingga build aplikasi tidak membutuhkan LibreOffice. Jika LibreOffice tidak tersedia, template dapat diregenerasi manual mengikuti format di atas; lihat git history commit `CBT-3-001`.
+
+### Batasan parser
+
+- PDF hanya text-based. PDF hasil scan/OCR akan ditolak dengan pesan “PDF tidak berisi teks”.
+- DOCX/PDF memakai heuristic: nomor soal harus literal `1.`, opsi harus literal `a.`–`e.`. Auto-numbering Word tidak dijamin terbaca sebagai label.
+- Satu file DOCX/PDF hanya untuk satu mapel. XLSX dapat mencampur beberapa `subject_code`.
+- Format XLSX membatasi opsi sampai E. Schema API tetap menerima sampai 26 label untuk kebutuhan masa depan.
+- `pdf-parse@2.4.5` dan `mammoth` diproses di server Node, bukan Edge Runtime.
+
+### Known Issues
+
+- `fromStoredOptions()` fallback ke `correctAnswer: true` jika data `TRUE_FALSE` corrupt (kedua opsi `isCorrect=false`). Ini technical debt Fase 9; perbaiki dengan validasi data atau penanganan error eksplisit.
+- `xlsx@0.18.5` memiliki advisory high severity tanpa fix. Import hanya untuk TEACHER/ADMIN dan file dibatasi 10MB; jangan membuka fitur upload ke pengguna anonim. Tinjau ulang sebelum produksi.
+- Commit 50 soal pada environment lokal selesai di bawah 1 detik; transaction timeout diset 60 detik dengan `maxWait` 10 detik sebagai batas aman.
 
 ## Testing
 
@@ -277,7 +402,22 @@ Test memakai database pada `DATABASE_URL` dan membersihkan data `vitest-*@exampl
 - TEACHER soft-delete → hilang dari list + `GET` detail `404`; `deletedAt` terisi di database
 - ADMIN melihat soal buatan TEACHER (scope filter)
 
-Total **15 test** (7 auth + 8 questions). Test membuat user/subject sendiri dan menghapusnya di `afterAll`.
+`tests/import.test.ts` menguji preview dan commit import:
+
+- XLSX valid 3 baris → 3 valid
+- XLSX dengan 1 `type` invalid → 2 valid, 1 invalid
+- XLSX `correct_answers` duplikat label → baris invalid
+- DOCX valid 2 soal → 2 valid
+- DOCX tanpa `Jawaban:` → error per soal
+- PDF valid 1 soal → 1 valid
+- PDF corrupt → global error
+- Commit 50 soal valid → 50 soal dibuat, job `COMMITTED`, di bawah 30 detik
+- Commit job bukan milik user → `404`
+- Commit job yang sudah `COMMITTED` → `400`
+
+Test memakai database pada `DATABASE_URL`, mengarahkan file import ke direktori temporary, dan membersihkan user/subject/question/import job di `afterAll`.
+
+Total **26 test** (7 auth + 9 questions + 10 import).
 
 ## Verifikasi Fase 1
 
@@ -310,7 +450,7 @@ Dijalankan pada Node 22.23.4 (npm 10.9.9):
 
 - `npx tsc --noEmit` → lolos
 - `npm run lint` → lolos tanpa warning
-- `npm test` → 15 test lolos (2 file)
+- `npm test` → 16 test lolos (2 file)
 - `npm run build` → lolos, 19 route + middleware
 - `GET /teacher/questions` sebagai TEACHER → `200`, sidebar menampilkan "Bank Soal"
 - `GET /teacher/questions` sebagai ADMIN → `200`
@@ -322,6 +462,27 @@ Dijalankan pada Node 22.23.4 (npm 10.9.9):
 - TEACHER `GET` soal milik ADMIN → `404`; ADMIN → `200`
 - PATCH `TRUE_FALSE` → `SHORT_ANSWER` → opsi lama diganti menjadi `KUNCI-1`
 - DELETE → hilang dari list, `GET` detail `404`, `psql` menunjukkan `deletedAt` terisi
+
+## Verifikasi Fase 3
+
+Dijalankan pada Node 22.23.4 (npm 10.9.9):
+
+- `npx prisma validate` → schema valid
+- `npx tsc --noEmit` → lolos
+- `npm run lint` → lolos
+- `npm test` → **26 test** lolos (3 file)
+- Commit 50 soal XLSX → 50 soal dibuat dalam **< 1 detik** pada local dev; transaction timeout 60 detik / `maxWait` 10 detik
+- `npm run build` → lolos, 24 route + middleware
+- `npm run templates:generate` → 3 template dibuat (LibreOffice)
+- Upload template XLSX → preview 3 valid → commit 3 soal
+- Upload template DOCX → preview 2 valid → commit 2 soal
+- Upload template PDF → preview 2 valid → commit 2 soal
+- Total setelah 3 import: 7 soal baru, 3 `import_jobs` berstatus `COMMITTED`, file upload terhapus
+- File 20MB → `413`
+- File teks dengan ekstensi/MIME PDF → `400` (magic bytes tidak cocok)
+- Refresh `/teacher/questions/import/[jobId]` → `200`, preview dibaca dari `previewJson`
+- STUDENT membuka `/teacher/questions/import` → `307` → `/403`
+- `@napi-rs/canvas` → `canvas OK` (x64 Linux, glibc 2.43)
 
 ## Struktur Saat Ini
 
@@ -340,6 +501,10 @@ app/
       page.tsx
       new/page.tsx
       [id]/edit/page.tsx
+      import/
+        page.tsx
+        [jobId]/page.tsx
+        _components/{upload-form.tsx, preview-table.tsx}
       _components/
         question-form.tsx
         filter-bar.tsx
@@ -356,6 +521,11 @@ app/
       _shared.ts
       route.ts
       [id]/route.ts
+      import/
+        _shared.ts
+        preview/route.ts
+        commit/route.ts
+        [id]/route.ts
     subjects/route.ts
   globals.css
   layout.tsx
@@ -374,12 +544,20 @@ lib/
   prisma.ts
   roles.ts
   utils.ts
+  importers/{types.ts, validate.ts, blocks.ts, xlsx.ts, docx.ts, pdf.ts,
+             index.ts, storage.ts, preview.ts, jobs.ts}
   questions/{answers.ts, labels.ts, query.ts}
   zod-schemas/{auth.ts, question.ts}
 middleware.ts
+public/
+  templates/{template-import-soal.xlsx, .docx, .pdf}
+scripts/
+  generate-templates.ts
 tests/
   auth.test.ts
   questions.test.ts
+  import.test.ts
+  fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
   setup.ts
 prisma/
   migrations/
@@ -389,8 +567,9 @@ prisma/
 
 ## Catatan Keamanan & Utang Teknis
 
-- `npm audit` (production deps) mencatat: `xlsx` high tanpa fix tersedia, `zod` high yang perbaikannya butuh Zod v4 (breaking), serta advisory pada `next`, `prisma`, dan `vitest` yang hanya dapat diselesaikan dengan upgrade mayor. Belum ada yang dieksploitasi, tetapi tinjau ulang sebelum produksi. `xlsx` dan `pdf-parse` belum dipakai dan baru akan dipakai pada Fase 3.
-- Rate limit better-auth memakai default library. Belum ada rate limit khusus untuk endpoint wrapper `/api/auth/login`, `/api/auth/register`, maupun endpoint Bank Soal.
+- `npm audit` (production deps) mencatat: `xlsx` high tanpa fix tersedia, `zod` high yang perbaikannya butuh Zod v4 (breaking), serta advisory pada `next`, `prisma`, dan `vitest` yang hanya dapat diselesaikan dengan upgrade mayor. `xlsx` sekarang dipakai import; batasi akses ke TEACHER/ADMIN, batasi ukuran file, dan tinjau ulang sebelum produksi.
+- Rate limit better-auth memakai default library. Belum ada rate limit khusus untuk endpoint wrapper `/api/auth/login`, `/api/auth/register`, endpoint Bank Soal, maupun endpoint import.
+- Import menyimpan file sementara di filesystem lokal (`uploads/imports`). Pastikan direktori tidak dapat diakses publik dan bersihkan orphan file jika database dihapus manual.
 - Belum ada verifikasi email, reset password, dan manajemen sesi per perangkat.
 - `classroom` diisi lewat seed/admin; belum ada UI pengelolaan.
 - Soft-delete Bank Soal belum punya UI restore/purge. Baris tetap tersimpan dan hanya difilter lewat `deletedAt`; sediakan job pembersihan atau halaman arsip sebelum produksi.
@@ -399,4 +578,4 @@ prisma/
 
 ## Fase Berikutnya
 
-Fase 3 akan menambahkan impor bank soal dari DOCX/PDF/XLSX (`mammoth`, `pdf-parse@2.4.5`, `xlsx`) dengan schema `questionInputSchema` yang sama. Fase selanjutnya mencakup manajemen ujian, pelaksanaan CBT, penilaian, dan manajemen pengguna/mata pelajaran.
+Fase 3 (import bank soal XLSX/DOCX/PDF) selesai. Fase 4 dan seterusnya mencakup manajemen ujian, pelaksanaan CBT, penilaian, serta manajemen pengguna/mata pelajaran.

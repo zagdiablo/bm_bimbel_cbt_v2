@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Pencil, Plus } from "lucide-react";
+import { Pencil, Plus, Upload } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -112,12 +112,20 @@ export default async function QuestionsPage({
           </p>
         </div>
 
-        <Button asChild>
-          <Link href="/teacher/questions/new">
-            <Plus className="h-4 w-4" />
-            Buat Soal
-          </Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link href="/teacher/questions/import">
+              <Upload className="h-4 w-4" />
+              Import Soal
+            </Link>
+          </Button>
+          <Button asChild>
+            <Link href="/teacher/questions/new">
+              <Plus className="h-4 w-4" />
+              Buat Soal
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <Suspense

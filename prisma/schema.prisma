@@ -28,6 +28,19 @@ enum Difficulty {
   HARD
 }
 
+enum ImportStatus {
+  PENDING_PREVIEW
+  COMMITTED
+  FAILED
+  EXPIRED
+}
+
+enum ImportFileType {
+  XLSX
+  DOCX
+  PDF
+}
+
 model User {
   id            String   @id @default(cuid())
   name          String
@@ -39,10 +52,11 @@ model User {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  sessions  Session[]
-  accounts  Account[]
-  subjects  Subject[]
-  questions Question[]
+  sessions   Session[]
+  accounts   Account[]
+  subjects   Subject[]
+  questions  Question[]
+  importJobs ImportJob[]
 
   @@map("users")
 }
@@ -151,4 +165,26 @@ model QuestionOption {
   @@unique([questionId, label])
   @@index([questionId])
   @@map("question_options")
+}
+
+model ImportJob {
+  id           String         @id @default(cuid())
+  userId       String
+  filename     String
+  fileType     ImportFileType
+  fileSize     Int
+  status       ImportStatus   @default(PENDING_PREVIEW)
+  previewJson  Json?
+  errorJson    Json?
+  createdCount Int            @default(0)
+  failedCount  Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  committedAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("import_jobs")
 }

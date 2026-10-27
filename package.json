@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:seed": "tsx prisma/seed.ts",
-    "db:reset": "prisma migrate reset --force --skip-seed && tsx prisma/seed.ts"
+    "db:reset": "prisma migrate reset --force --skip-seed && tsx prisma/seed.ts",
+    "templates:generate": "tsx scripts/generate-templates.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^6.0.0",
