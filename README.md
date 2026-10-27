@@ -690,6 +690,94 @@ Dashboard memfinalisasi maksimal **25** attempt `IN_PROGRESS` yang sudah lewat `
 - Simpan esai terakhir memunculkan dialog konfirmasi karena akan mengunci nilai esai (`GRADED`).
 - ADMIN dapat regrade esai; TEACHER read-only untuk esai setelah `GRADED`, tetapi tetap boleh mengoreksi short answer karena auto-grade-nya heuristik.
 
+## Laporan & Export Hasil (Fase 8)
+
+Guru/admin melihat rekap hasil ujian di `/teacher/reports`, lalu detail per ujian di `/teacher/reports/[examId]`. Laporan bersifat **read-only**: tidak menulis Attempt/Answer dan tidak menjalankan lazy sweep.
+
+### Matriks akses
+
+| Path | STUDENT | TEACHER | ADMIN |
+|---|---|---|---|
+| `/teacher/reports`, `/teacher/reports/*` | 403 | ✅ exam miliknya | ✅ semua |
+| `/api/reports`, `/api/reports/*` | 403 | ✅ exam miliknya | ✅ semua |
+
+TEACHER yang mengakses exam guru lain mendapat `404` (bukan `403`), konsisten Fase 5/7. Tanpa session → `401`.
+
+### Endpoint
+
+| Method | Path | Keterangan |
+|---|---|---|
+| `GET` | `/api/reports` | List exam yang punya ≥1 attempt; filter `status`, `subjectId`, `search` judul, `startFrom`/`startTo` (`Exam.startAt`), pagination. |
+| `GET` | `/api/reports/[examId]` | Detail: metadata exam, statistik, histogram, daftar kelas, tabel attempt. Filter `classroom`, `status`, `search` nama siswa, pagination. |
+| `GET` | `/api/reports/[examId]/export?format=xlsx\|pdf` | Unduh laporan; mengikuti filter aktif (`classroom`, `status`, `search`). |
+
+Contoh payload detail:
+
+```json
+{
+  "exam": { "id": "...", "title": "...", "token": "DEMO26", "owner": { "id": "...", "name": "Guru Demo" } },
+  "stats": {
+    "totalAttempts": 7,
+    "byStatus": { "inProgress": 1, "submitted": 1, "graded": 5 },
+    "graded": { "count": 5, "avgScore": 54, "minScore": 0, "maxScore": 100, "avgPercentage": 54 },
+    "histogram": [
+      { "bin": 1, "label": "0–20%", "min": 0, "max": 20, "count": 2 },
+      { "bin": 2, "label": "21–40%", "min": 21, "max": 40, "count": 0 },
+      { "bin": 3, "label": "41–60%", "min": 41, "max": 60, "count": 1 },
+      { "bin": 4, "label": "61–80%", "min": 61, "max": 80, "count": 0 },
+      { "bin": 5, "label": "81–100%", "min": 81, "max": 100, "count": 2 }
+    ],
+    "histogramTotal": 5,
+    "invalidScores": 0
+  },
+  "classrooms": ["XII IPA 1", "XII IPS 2"],
+  "attempts": { "items": [], "total": 7, "page": 1, "pageSize": 20 }
+}
+```
+
+### Agregasi
+
+- Counter `IN_PROGRESS`/`SUBMITTED`/`GRADED` dihitung dari `Attempt.status`.
+- `avg`/`min`/`max` **hanya** dari `GRADED`; attempt yang belum selesai/dinilai tidak menurunkan rata-rata.
+- Histogram 5 bin dengan **batas atas inklusif**: `bin = clamp(ceil(pct / 20) - 1, 0, 4) + 1`. Artinya 0% dan 20% masuk bin 1, 50% masuk bin 3, 100% masuk bin 5.
+- `histogramTotal` wajib sama dengan `stats.graded.count`. `invalidScores` menampung GRADED dengan `totalScore` null atau `maxScore <= 0`.
+- `avgPercentage = avg(totalScore) / maxScore` (maxScore seragam per exam karena snapshot immutable).
+- Agregasi memakai SQL: `prisma.attempt.groupBy` untuk counter/avg/min/max, dan satu `$queryRaw` untuk bin histogram. **Tidak ada loop per-attempt** dan tidak ada query `Answer` sama sekali.
+- List exam memakai satu `groupBy` untuk seluruh halaman (≤100 exam), bukan query per exam.
+- `classroom = null` dikelompokkan sebagai "Tanpa Kelas"; filter memakai sentinel `__none__`.
+- Late badge memakai `isLateSubmission` dari `lib/grading/late.ts` (satu definisi dengan Fase 7): `receivedAt - submittedAt > 60 detik`.
+
+### Export
+
+Sheet XLSX `results`, header tetap:
+
+| No | Nama Siswa | Kelas | Mulai | Submit | Status | Late | Total | Max | Persentase (%) | Graded At | Graded By |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+
+- `Late` = index 6, `Total` = index 7, `Max` = index 8, `Persentase (%)` = index 9.
+- `Total`/`Max`/`Persentase` ditulis **numerik**; sel yang belum ada nilainya dikosongkan (`""`) agar tipe kolom tidak berubah.
+- PDF memakai `@react-pdf/renderer`, **A4 landscape**, berisi header exam, ringkasan, tabel dengan header berulang di setiap halaman, dan footer `Halaman n dari m`.
+- Nama file: `hasil-<kode-mapel>-<YYYYMMDD-HHmmss>.<ext>`.
+- Batas: XLSX **2000** attempt (`EXPORT_MAX_ATTEMPTS`), PDF **500** attempt (`EXPORT_MAX_PDF_ATTEMPTS`). Melebihi batas → `400` dengan saran mempersempit filter; PDF menambahkan hint memakai XLSX.
+- `fileResponse` dipindah ke `lib/exporters/shared.ts` dan dipakai bersama oleh export Bank Soal (Fase 4) dan laporan (Fase 8).
+- Export tidak menyertakan token, `snapshotJson`, `questionOrder`, `optionOrder`, maupun data `Answer`.
+
+### UI
+
+- `/teacher/reports` — list exam yang punya attempt: counter per status, rata-rata, filter mapel/status/tanggal/search, pagination.
+- `/teacher/reports/[examId]` — kartu statistik, histogram, ringkasan, filter kelas/status/nama, tabel attempt, tombol export, pagination.
+- Aksi "Lihat" hanya untuk attempt `SUBMITTED`/`GRADED` dan menuju `/teacher/grading/[attemptId]` (Fase 7). Attempt `IN_PROGRESS` ditandai "Belum selesai".
+- Token ditampilkan di detail (guru/admin) dan sengaja tidak muncul di list/export.
+- Tombol export mencantumkan jumlah attempt pada tooltip dan hint "PDF maks 500 baris; gunakan XLSX untuk data lengkap."
+
+### Keputusan default dan tech debt
+
+- **Tanpa KKM/passing grade.** KKM biasanya milik mapel/kelas, bukan exam; perlu kolom baru dan UI pengaturan.
+- **Tanpa analisis per soal** (difficulty/discrimination index) → Fase 9.
+- **Tanpa lazy sweep di laporan.** Attempt `IN_PROGRESS` yang sudah lewat expiry tetap tampil apa adanya sampai ada request grading/submit yang menyelesaikannya.
+- `showResult = false` tidak memblokir laporan guru; kebijakan itu hanya untuk tampilan siswa.
+- Tabel attempt tidak pernah men-select `Answer`, `snapshotJson`, atau kolom order; payload hanya metadata + skor.
+
 ## Testing
 
 ```bash
@@ -783,7 +871,24 @@ Test memakai fixture unik dan cleanup berurutan `answers → attempts → examQu
 - **Gate 4:** validasi score >max/negatif/non-integer/string/missing; score 0 dan max diterima; detail guru memuat kunci/explanation; hasil siswa tetap tidak membocorkan kunci; **#30 short answer override oleh TEACHER setelah `GRADED` — `Attempt.gradedAt/gradedById` tetap, `Answer.gradedAt` diperbarui, `Answer.gradedById = teacher`, total recomputed**.
 - **Lazy sweep (#29):** 30 attempt expired → request pertama memfinalisasi tepat 25, request kedua 5, sisa `IN_PROGRESS = 0`.
 
-Total **139 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams + 44 attempts + 29 grading).
+`tests/reports.test.ts` menguji laporan Fase 8, termasuk empat gate:
+
+- **Gate 1 (R1–R6):** avg/min/max hanya GRADED; histogram 0/50/100% → `[1,0,1,0,1]`; batas bin inklusif 20/40/60/80/100 → `[1,1,1,1,1]`; satu GRADED; exam kosong → `200`; list hanya exam yang punya attempt dengan counter per status.
+- **Gate 2 (R7–R12):** TEACHER B → `404` (detail + export); ADMIN → `200`; STUDENT → `403` (list/detail/export); tanpa session → `401`; list TEACHER hanya exam miliknya, ADMIN semua.
+- **Gate 4 (R13–R15):** payload tidak memuat `isCorrect`, `explanation`, `snapshotJson`, `questionOrder`, `optionOrder`, `answers`, `questionId`, `selectedLabels`, `textAnswer`; token hanya di detail.
+- **Gate 5 (R16–R21):** filter classroom, sentinel `__none__`, search nama case-insensitive + status, date range + search judul, pagination, late badge (di atas/di tepat threshold/belum submit).
+- **R30:** regression guard hasil refactor — `LATE_SUBMISSION_THRESHOLD_MS` tetap 60.000 ms, `isLateSubmission` dan `fileResponse` berperilaku sama.
+
+`tests/report-export.test.ts` menguji integritas export:
+
+- XLSX 10 GRADED → 10 baris data + header tetap; `Late` index 6, `Total` index 7; `Total`/`Max`/`Persentase` numerik.
+- Exam kosong → `200` dengan header saja.
+- Round-trip `XLSX.read()` → sheet `results`, nilai baris valid.
+- PDF → `%PDF-`, `application/pdf`, A4 landscape, teks exam/siswa terbaca (`pdf-parse`).
+- Cap export (`EXPORT_MAX_ATTEMPTS`/`EXPORT_MAX_PDF_ATTEMPTS`) → `400` dengan pesan jelas.
+- Filter `classroom` ikut terbawa ke export (hanya baris kelas tersebut).
+
+Total **168 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams + 44 attempts + 29 grading + 22 reports + 7 report-export).
 
 ## Verifikasi Fase 1
 
@@ -922,6 +1027,23 @@ Dijalankan pada runtime Node 24-compatible:
 - **Gate 2 race:** `G2.9` dua essay concurrent → `GRADED`, total 7, `gradedAt` sekali; `G2.10` same essay concurrent → status `[200, 409]`, revision konsisten
 - **Lazy sweep:** `#29` 30 expired `IN_PROGRESS` → request pertama `swept: 25`, sisa 5; request kedua `swept: 5`, sisa 0
 
+## Verifikasi Fase 8
+
+- `git diff prisma/schema.prisma` → kosong; **tidak ada migration** (pure aggregation).
+- Refactor R1–R3: `fileResponse` → `lib/exporters/shared.ts`, `isLateSubmission` → `lib/grading/late.ts`, `AttemptStatusBadge` → `components/attempts/`.
+- `npx vitest run tests/export.test.ts` → **6 lolos**; `npx vitest run tests/grading.test.ts` → **29 lolos** (tidak ada regresi).
+- `npx vitest run --reporter=verbose` → **168 test lolos** (9 file).
+- `npx tsc --noEmit` → lolos; `npx eslint .` → 0 error/0 warning; `npm run build` → lolos (`/teacher/reports`, `/teacher/reports/[examId]`, `/api/reports`, `/api/reports/[examId]`, `/api/reports/[examId]/export` terdaftar).
+- `curl` teacher `GET /api/reports?search=...` → exam dengan 10 attempt (`graded: 10`, `avgScore: 45`).
+- `curl` detail demo exam (5 GRADED skor 0/20/50/100/100 + 1 SUBMITTED + 1 IN_PROGRESS) → `totalAttempts: 7`, `avg: 54`, histogram `[2,0,1,0,2]` (0% dan 20% sama-sama bin 1), `histogramTotal: 5`, `invalidScores: 0`.
+- `curl` export XLSX exam 10 attempt → `200`, 10 baris data, header `Late`=6/`Total`=7, `Total`/`Max`/`Persentase` bertipe number.
+- `curl` export PDF → `200`, `%PDF-`, `application/pdf`, 1 halaman A4 landscape (841.89 × 595.28), teks exam/summary/footer terbaca.
+- `curl` exam kosong → detail `200` dengan counter 0 dan histogram nol; export XLSX `200` dengan header saja (1 baris).
+- `curl` filter `classroom=XII IPA 1` → 6 attempt; export dengan filter yang sama → 6 baris data, hanya kelas tersebut.
+- Scope: teacher → exam milik admin `404` (detail + export); admin → exam guru `200` (detail + export); student → `403` (list/detail/export); tanpa session → `401`.
+- Gate 4: grep payload detail → `isCorrect` 0, `explanation` 0, `snapshotJson` 0, `questionOrder` 0, `optionOrder` 0, `"answers"` 0; token 0 match di payload list.
+- Fixture verifikasi dihapus kembali (`attempts/exams/users`), `demo-exam-1` kembali 0 attempt.
+
 ## Struktur Saat Ini
 
 ```text
@@ -961,14 +1083,19 @@ app/
       [attemptId]/page.tsx
       _components/{grading-filter-bar.tsx, score-form.tsx,
                   swept-attempts-toast.tsx}
+    teacher/reports/
+      page.tsx
+      _components/report-filter-bar.tsx
+      [examId]/page.tsx
+      [examId]/_components/{report-attempts-filter-bar.tsx,
+                          score-histogram.tsx, export-buttons.tsx}
     student/
       page.tsx
       exams/
         page.tsx
         [id]/take/page.tsx
         [id]/result/page.tsx
-        _components/{attempt-status-badge.tsx, join-exam-dialog.tsx,
-                     take-exam-client.tsx}
+        _components/{join-exam-dialog.tsx, take-exam-client.tsx}
   403/page.tsx
   api/
     auth/
@@ -1009,12 +1136,18 @@ app/
       [attemptId]/route.ts
       [attemptId]/essays/[examQuestionId]/route.ts
       [attemptId]/short-answers/[examQuestionId]/route.ts
+    reports/
+      _shared.ts
+      route.ts
+      [examId]/route.ts
+      [examId]/export/route.ts
     subjects/route.ts
   globals.css
   layout.tsx
   page.tsx
   smoke/page.tsx
 components/
+  attempts/attempt-status-badge.tsx
   dashboard/{sidebar.tsx, user-menu.tsx}
   ui/{alert, alert-dialog, badge, button, card, dialog, dropdown-menu, form,
       input, label, select, table, textarea, toast, toaster}.tsx
@@ -1030,13 +1163,16 @@ lib/
   utils.ts
   importers/{types.ts, validate.ts, blocks.ts, xlsx.ts, docx.ts, pdf.ts,
              index.ts, storage.ts, preview.ts, jobs.ts}
-  exporters/{shared.ts, xlsx.ts, pdf.ts, pdf-document.tsx}
+  exporters/{shared.ts, xlsx.ts, pdf.ts, pdf-document.tsx,
+             report-xlsx.ts, report-pdf.ts, report-pdf-document.tsx}
   questions/{answers.ts, labels.ts, query.ts}
   exams/{datetime.ts, labels.ts, query.ts, snapshot.ts, token.ts}
   attempts/{time.ts, shuffle.ts, grade.ts, payload.ts, service.ts}
-  grading/{constants.ts, types.ts, recompute.ts, snapshot.ts, query.ts,
-            service.ts}
-  zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts, grading.ts}
+  grading/{constants.ts, late.ts, types.ts, recompute.ts, snapshot.ts,
+            query.ts, service.ts}
+  reports/{types.ts, labels.ts, stats.ts, query.ts}
+  zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts, grading.ts,
+               report.ts}
 middleware.ts
 public/
   templates/{template-import-soal.xlsx, .docx, .pdf}
@@ -1050,6 +1186,8 @@ tests/
   exams.test.ts
   attempts.test.ts
   grading.test.ts
+  reports.test.ts
+  report-export.test.ts
   fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
   setup.ts
 prisma/
@@ -1133,10 +1271,11 @@ prisma/
 
 ## Fase Berikutnya
 
-Fase 7 (penilaian essay) selesai. Fase berikutnya adalah rekap nilai/laporan, serta manajemen pengguna/mata pelajaran. Fase 8 disarankan:
-- rekap nilai per ujian/kelas/siswa; query dari `Attempt` + `Answer`, bukan dari `snapshotJson`,
-- export rekap (XLSX/PDF) dengan scope TEACHER/ADMIN,
-- statistik distribusi nilai, tingkat kelulusan, dan daftar siswa belum mengumpulkan,
-- tampilan hasil per soal untuk siswa (opsional, dengan kebijakan `showResult`),
+Fase 8 (laporan & export hasil) selesai. Fase berikutnya disarankan:
+- manajemen pengguna dan mata pelajaran (CRUD, import siswa/kelas),
+- KKM/passing grade per mapel/kelas + rekap kelulusan,
+- analisis butir soal (difficulty index, discrimination index) dari `Answer`,
+- feedback per esai (`Answer.feedback`) dan tombol finalize eksplisit,
 - audit log penuh untuk perubahan nilai/manual override,
-- pertimbangkan feedback per esai dan tombol finalize eksplisit berdasarkan kebutuhan guru.
+- tampilan hasil per soal untuk siswa (opsional, tetap menghormati `showResult`),
+- scheduler/cron untuk finalisasi attempt expired agar laporan tidak bergantung pada request grading.

@@ -18,7 +18,7 @@ import {
 import { requirePageRole } from "@/lib/auth-helpers";
 import { formatDuration, formatWib } from "@/lib/exams/datetime";
 
-import { AttemptStatusBadge } from "./_components/attempt-status-badge";
+import { AttemptStatusBadge } from "@/components/attempts/attempt-status-badge";
 import { JoinExamDialog } from "./_components/join-exam-dialog";
 
 export const metadata: Metadata = {

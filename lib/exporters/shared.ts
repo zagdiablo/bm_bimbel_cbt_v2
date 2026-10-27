@@ -1,3 +1,5 @@
+import { NextResponse } from "next/server";
+
 import type { QuestionExportFormat } from "@/lib/zod-schemas/question";
 
 export const XLSX_MIME_TYPE =
@@ -20,6 +22,34 @@ export function exportMaxQuestions(): number {
 
 export function exportCapMessage(max = exportMaxQuestions()): string {
   return `Filter terlalu luas, hasil melebihi ${max} soal. Persempit filter.`;
+}
+
+/** Cap export laporan; PDF lebih kecil karena renderer menahan seluruh dokumen. */
+export const DEFAULT_REPORT_EXPORT_MAX = 2_000;
+export const DEFAULT_REPORT_PDF_EXPORT_MAX = 500;
+
+export function exportMaxAttempts(): number {
+  const raw = Number(process.env.EXPORT_MAX_ATTEMPTS);
+
+  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_REPORT_EXPORT_MAX;
+}
+
+export function exportMaxPdfAttempts(): number {
+  const raw = Number(process.env.EXPORT_MAX_PDF_ATTEMPTS);
+
+  return Number.isInteger(raw) && raw > 0
+    ? raw
+    : DEFAULT_REPORT_PDF_EXPORT_MAX;
+}
+
+export function reportCapMessage(
+  format: "xlsx" | "pdf",
+  max: number,
+): string {
+  const hint =
+    format === "pdf" ? " Gunakan XLSX untuk data lengkap." : "";
+
+  return `Filter terlalu luas, hasil melebihi ${max} attempt. Persempit filter.${hint}`;
 }
 
 function jakartaParts(date: Date): Record<string, string> {
@@ -78,3 +108,34 @@ export function buildExportFilename(
 ): string {
   return `soal-${subjectSlug(subjectCode)}-${formatExportTimestamp(date)}.${format}`;
 }
+
+/** `hasil-mtk-20261027-112233.xlsx` — file laporan hasil ujian (Fase 8). */
+export function buildReportFilename(
+  format: "xlsx" | "pdf",
+  subjectCode: string | null | undefined,
+  date: Date,
+): string {
+  return `hasil-${subjectSlug(subjectCode)}-${formatExportTimestamp(date)}.${format}`;
+}
+
+/**
+ * Respons unduhan file yang dipakai bersama oleh export Bank Soal (Fase 4)
+ * dan export hasil ujian (Fase 8). `no-store` mencegah cache file yang
+ * isinya bergantung pada filter dan data terbaru.
+ */
+export function fileResponse(
+  buffer: Buffer,
+  contentType: string,
+  filename: string,
+): NextResponse {
+  return new NextResponse(new Uint8Array(buffer), {
+    status: 200,
+    headers: {
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": String(buffer.byteLength),
+      "Cache-Control": "no-store",
+    },
+  });
+}
+

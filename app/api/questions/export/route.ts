@@ -4,6 +4,7 @@ import {
   buildExportFilename,
   exportCapMessage,
   exportMaxQuestions,
+  fileResponse,
   PDF_MIME_TYPE,
   XLSX_MIME_TYPE,
 } from "@/lib/exporters/shared";
@@ -23,22 +24,6 @@ import {
 } from "../_shared";
 
 export const runtime = "nodejs";
-
-function fileResponse(
-  buffer: Buffer,
-  contentType: string,
-  filename: string,
-): NextResponse {
-  return new NextResponse(new Uint8Array(buffer), {
-    status: 200,
-    headers: {
-      "Content-Type": contentType,
-      "Content-Disposition": `attachment; filename="${filename}"`,
-      "Content-Length": String(buffer.byteLength),
-      "Cache-Control": "no-store",
-    },
-  });
-}
 
 export async function GET(request: Request) {
   try {

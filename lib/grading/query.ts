@@ -8,10 +8,8 @@ import type { AuthUser } from "@/lib/auth-helpers";
 import { examScopeWhere } from "@/lib/exams/query";
 import { prisma } from "@/lib/prisma";
 
-import {
-  LAZY_SWEEP_LIMIT,
-  LATE_SUBMISSION_THRESHOLD_MS,
-} from "./constants";
+import { LAZY_SWEEP_LIMIT } from "./constants";
+import { isLateSubmission } from "./late";
 import { resolvePoints, summarizeAttemptScore } from "./recompute";
 import { parseGradingSnapshot } from "./snapshot";
 import type {
@@ -67,20 +65,6 @@ const gradingListInclude = {
   student: { select: { id: true, name: true, classroom: true } },
   answers: { select: { examQuestionId: true, score: true } },
 } satisfies Prisma.AttemptInclude;
-
-function isLateSubmission(
-  submittedAt: Date | null,
-  receivedAt: Date | null,
-): boolean {
-  if (!submittedAt || !receivedAt) {
-    return false;
-  }
-
-  return (
-    receivedAt.getTime() - submittedAt.getTime() >
-    LATE_SUBMISSION_THRESHOLD_MS
-  );
-}
 
 async function findGradingAttempt(
   attemptId: string,

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   ClipboardCheck,
   ClipboardList,
   FileQuestion,
@@ -42,6 +43,11 @@ function navItemsForRole(role: Role): NavItem[] {
       href: "/teacher/grading",
       label: "Penilaian",
       icon: ClipboardCheck,
+    });
+    items.push({
+      href: "/teacher/reports",
+      label: "Laporan",
+      icon: BarChart3,
     });
   }
 
@@ -95,7 +101,7 @@ export function DashboardSidebar({ role }: { role: Role }) {
       </nav>
 
       <div className="border-t p-4 text-xs text-muted-foreground">
-        Fase 7 &middot; Penilaian Esai
+        Fase 8 &middot; Laporan &amp; Export
       </div>
     </aside>
   );
