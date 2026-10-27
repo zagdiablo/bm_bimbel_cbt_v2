@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  ClipboardCheck,
   ClipboardList,
   FileQuestion,
   FlaskConical,
@@ -36,6 +37,11 @@ function navItemsForRole(role: Role): NavItem[] {
       href: "/teacher/exams",
       label: "Ujian",
       icon: ClipboardList,
+    });
+    items.push({
+      href: "/teacher/grading",
+      label: "Penilaian",
+      icon: ClipboardCheck,
     });
   }
 
@@ -89,7 +95,7 @@ export function DashboardSidebar({ role }: { role: Role }) {
       </nav>
 
       <div className="border-t p-4 text-xs text-muted-foreground">
-        Fase 6 &middot; Pelaksanaan Ujian
+        Fase 7 &middot; Penilaian Esai
       </div>
     </aside>
   );

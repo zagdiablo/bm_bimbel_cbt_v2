@@ -66,11 +66,13 @@ model User {
 
   sessions   Session[]
   accounts   Account[]
-  subjects   Subject[]
-  questions  Question[]
-  importJobs ImportJob[]
-  exams      Exam[]
-  attempts   Attempt[]
+  subjects       Subject[]
+  questions      Question[]
+  importJobs     ImportJob[]
+  exams          Exam[]
+  attempts       Attempt[]
+  gradedAnswers  Answer[]  @relation("AnswerGrader")
+  gradedAttempts Attempt[] @relation("AttemptGrader")
 
   @@map("users")
 }
@@ -264,6 +266,7 @@ model Attempt {
   submittedAt   DateTime?
   receivedAt    DateTime?
   gradedAt      DateTime?
+  gradedById    String?
   totalScore    Int?
   maxScore      Int
   questionOrder String[]
@@ -271,14 +274,17 @@ model Attempt {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  exam    Exam     @relation(fields: [examId], references: [id], onDelete: Restrict)
-  student User     @relation(fields: [studentId], references: [id], onDelete: Restrict)
-  answers Answer[]
+  exam     Exam     @relation(fields: [examId], references: [id], onDelete: Restrict)
+  student  User     @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  gradedBy User?    @relation("AttemptGrader", fields: [gradedById], references: [id], onDelete: SetNull)
+  answers  Answer[]
 
   @@unique([examId, studentId])
   @@index([studentId, status])
   @@index([examId, status])
   @@index([status, expiresAt])
+  @@index([status, submittedAt])
+  @@index([gradedById])
   @@map("attempts")
 }
 
@@ -290,14 +296,18 @@ model Answer {
   textAnswer     String?  @db.Text
   isCorrect      Boolean?
   score          Int?
-  revision       Int      @default(1)
-  answeredAt     DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  revision       Int       @default(1)
+  answeredAt     DateTime  @default(now())
+  gradedAt       DateTime?
+  gradedById     String?
+  updatedAt      DateTime  @updatedAt
 
   attempt      Attempt      @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   examQuestion ExamQuestion @relation(fields: [examQuestionId], references: [id], onDelete: Restrict)
+  gradedBy     User?        @relation("AnswerGrader", fields: [gradedById], references: [id], onDelete: SetNull)
 
   @@unique([attemptId, examQuestionId])
   @@index([examQuestionId])
+  @@index([gradedById])
   @@map("answers")
 }

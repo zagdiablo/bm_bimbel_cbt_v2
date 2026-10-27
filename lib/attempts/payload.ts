@@ -67,6 +67,7 @@ export function toSafeAnswer(
 export type AttemptIntegrityContext = {
   attemptId?: string;
   examId?: string;
+  examQuestionId?: string;
 };
 
 /**
@@ -80,6 +81,9 @@ export function attemptIntegrityError(
   const suffix = [
     context.attemptId ? `attemptId=${context.attemptId}` : null,
     context.examId ? `examId=${context.examId}` : null,
+    context.examQuestionId
+      ? `examQuestionId=${context.examQuestionId}`
+      : null,
     "Hubungi admin.",
   ]
     .filter(Boolean)

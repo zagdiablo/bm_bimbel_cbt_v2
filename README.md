@@ -635,6 +635,61 @@ IN_PROGRESS ──submit/expiry──> SUBMITTED (ada essay) ──Fase 7──>
 
 `demo-exam-1` sekarang **PUBLISHED** dan berada dalam window aktif (`now - 1 jam` s/d `now + 2 jam`), token **`DEMO26`**, dengan 5 soal: single choice, multiple choice, true/false, short answer, dan essay. Re-run `npm run db:seed` akan mereset attempt demo untuk exam tersebut.
 
+## Penilaian Essay (Fase 7)
+
+Guru menilai jawaban esai di `/teacher/grading`. Attempt `SUBMITTED` muncul di daftar; guru membuka attempt, memberi nilai per esai, dan attempt otomatis menjadi `GRADED` saat essay terakhir dinilai. Semua konten soal dibaca dari `ExamQuestion.snapshotJson`, tidak pernah dari bank soal live.
+
+### Matriks akses
+
+| Path | STUDENT | TEACHER | ADMIN |
+|---|---|---|---|
+| `/teacher/grading`, `/teacher/grading/*` | 403 | ✅ exam miliknya | ✅ semua |
+| `/api/grading`, `/api/grading/*` | 403 | ✅ exam miliknya | ✅ semua |
+
+TEACHER yang mengakses exam guru lain mendapat `404` (bukan `403`) agar keberadaan exam tidak bocor. Exam `CLOSED` tetap dapat dinilai; status exam tidak menghalangi penilaian.
+
+### Endpoint
+
+| Method | Path | Keterangan |
+|---|---|---|
+| `GET` | `/api/grading` | List attempt `SUBMITTED`; filter `examId`, `search` nama siswa, pagination. |
+| `GET` | `/api/grading/[attemptId]` | Detail grading: essay, jawaban siswa, snapshot, explanation, ringkasan objektif. |
+| `PUT` | `/api/grading/[attemptId]/essays/[examQuestionId]` | Body `{ score, baseRevision }`; nilai satu esai. |
+| `PUT` | `/api/grading/[attemptId]/short-answers/[examQuestionId]` | Body `{ score, baseRevision }`; koreksi manual short answer. |
+
+### Invariant dan state transition
+
+- **Pending essay dihitung dari `ExamQuestion` bertipe `ESSAY`, bukan dari `Answer`.** Essay yang tidak dijawab siswa tidak punya baris `Answer`; tanpa aturan ini attempt akan stuck `SUBMITTED` selamanya.
+- Saat guru menilai essay tanpa `Answer`, server membuat placeholder `Answer` dengan `textAnswer: null`, `selectedLabels: []`, `isCorrect: null`, `revision: 1`, dan **`answeredAt = attempt.submittedAt`** (bukan waktu guru menilai).
+- `totalScore = sum(Answer.score)` untuk semua score non-null. `Answer` objektif dengan score null dianggap data rusak → `500` eksplisit.
+- `SUBMITTED → GRADED` hanya terjadi jika semua `ExamQuestion` essay punya score non-null. Partial save tetap `SUBMITTED` dan total diperbarui sebagai nilai sementara.
+- `Attempt.gradedAt` dan `Attempt.gradedById` di-set **sekali** saat transisi ke `GRADED`; regrade admin tidak mengubahnya.
+- `Answer.gradedAt` dan `Answer.gradedById` diperbarui pada setiap save, termasuk regrade.
+- `isCorrect` essay selalu `null`; nilai essay hanya direpresentasikan oleh `score`.
+- `baseRevision` mengikuti semantik Fase 6. Revision conflict / attempt `GRADED` yang diubah TEACHER → `409`.
+
+### Row lock dan konkurensi
+
+`saveQuestionScore()` mengambil row lock `SELECT ... FOR UPDATE` pada `Attempt` di awal transaksi. Ini men-serialisasi penilaian per attempt sehingga dua essay terakhir yang disimpan bersamaan tidak sama-sama melihat state lama dan meninggalkan attempt `SUBMITTED`. Same-essay concurrency dilindungi `Answer.revision`.
+
+### Gate
+
+- **Gate 1 — snapshot-only:** `parseExamSnapshot(snapshotJson)` eksplisit; snapshot null/invalid → `500` dengan `examQuestionId`. Relasi `Question` live tidak pernah di-select.
+- **Gate 2 — recompute:** total dari `Answer.score`; pending dari `ExamQuestion` essay; placeholder upsert; transisi hanya saat pending 0.
+- **Gate 3 — scope/RBAC:** TEACHER hanya exam `ownerId` sendiri; ADMIN semua; STUDENT `403`; CLOSED tetap bisa dinilai.
+- **Gate 4 — validasi:** score integer `0..effectivePoints` (`pointsOverride ?? snapshot.points`); negative/non-integer/>max → `400`.
+
+### Lazy sweep
+
+Dashboard memfinalisasi maksimal **25** attempt `IN_PROGRESS` yang sudah lewat `expiresAt` per request, lalu menampilkan attempt `SUBMITTED`. Sisa attempt diproses pada request berikutnya. Ini menutup gap Fase 6: attempt expired yang tidak pernah dibuka tetap bisa masuk daftar penilaian.
+
+### UI
+
+- `/teacher/grading` — tabel attempt menunggu nilai: siswa, ujian, waktu submit, badge terlambat, jumlah esai belum dinilai, nilai sementara. Jika lazy sweep terjadi, muncul toast “N attempt kedaluwarsa diselesaikan”.
+- `/teacher/grading/[attemptId]` — daftar esai + jawaban siswa + pembahasan snapshot + input nilai; ringkasan objektif read-only; short answer dapat dikoreksi.
+- Simpan esai terakhir memunculkan dialog konfirmasi karena akan mengunci nilai esai (`GRADED`).
+- ADMIN dapat regrade esai; TEACHER read-only untuk esai setelah `GRADED`, tetapi tetap boleh mengoreksi short answer karena auto-grade-nya heuristik.
+
 ## Testing
 
 ```bash
@@ -720,7 +775,15 @@ Test memakai user/subject khusus, judul berprefix unik, dan cleanup `afterAll`, 
 
 Test memakai fixture unik dan cleanup berurutan `answers → attempts → examQuestions → exams → questions → subjects → users` karena FK `Restrict`. Cleanup diverifikasi dengan assertion jumlah attempt = 0.
 
-Total **110 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams + 44 attempts).
+`tests/grading.test.ts` menguji Fase 7 secara langsung, termasuk empat gate:
+
+- **Gate 1 (G1.1–G1.5):** grading membaca snapshot setelah bank soal diubah; snapshot null/invalid → `500` eksplisit dengan `examQuestionId`; `pointsOverride` membatasi score dan `maxScore`; score objektif null → `500` integrity.
+- **Gate 2 (G2.1–G2.11):** partial save tetap `SUBMITTED`; esai terakhir → `GRADED`; essay kosong membuat placeholder dengan `answeredAt = submittedAt` (#27); semua esai 0 → `GRADED`; idempotensi/revision; invariant total; objek/unknown/foreign essay; active attempt `409` dan expired lazy-finalize; **dua essay berbeda concurrent → `GRADED`**; **same essay concurrent → satu `409`**; `isCorrect` essay tetap null dan teks siswa tidak berubah.
+- **Gate 3 (G3.1–G3.9):** list scope + badge terlambat + exclusion `GRADED`; guru menilai attempt siswa lain pada exam miliknya; exam guru lain `404`; admin semua; student `403`; exam `CLOSED` tetap bisa dinilai; teacher regrade `409`; **admin regrade mengubah `Answer.gradedAt/By` tetapi tidak `Attempt.gradedAt/By`** (#28).
+- **Gate 4:** validasi score >max/negatif/non-integer/string/missing; score 0 dan max diterima; detail guru memuat kunci/explanation; hasil siswa tetap tidak membocorkan kunci; **#30 short answer override oleh TEACHER setelah `GRADED` — `Attempt.gradedAt/gradedById` tetap, `Answer.gradedAt` diperbarui, `Answer.gradedById = teacher`, total recomputed**.
+- **Lazy sweep (#29):** 30 attempt expired → request pertama memfinalisasi tepat 25, request kedua 5, sisa `IN_PROGRESS = 0`.
+
+Total **139 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams + 44 attempts + 29 grading).
 
 ## Verifikasi Fase 1
 
@@ -840,6 +903,25 @@ Dijalankan pada Node 24-compatible runtime:
 - Gate A10 via `curl`: `expiresAt` dimundurkan 5 menit → submit `200`, `submittedAt = 2026-10-27T07:26:04.201Z`, `receivedAt = 2026-10-27T07:31:04.293Z`, `receivedAt > submittedAt = true`
 - Result endpoint → `SUBMITTED`, `totalScore: null`, pesan “Menunggu penilaian essay oleh guru.”
 
+## Verifikasi Fase 7
+
+Dijalankan pada runtime Node 24-compatible:
+
+- `npx prisma migrate dev --name add_grading_audit` → migration `20261027080036_add_grading_audit` diterapkan (`Answer.gradedAt`, `Answer.gradedById`, `Attempt.gradedById`, index)
+- `npm run typecheck` → lolos
+- `npm run lint` → lolos tanpa warning
+- `npx vitest run --reporter=verbose` → **139 test** lolos (7 file)
+- `npm run build` → lolos; route `/teacher/grading`, `/teacher/grading/[attemptId]`, dan seluruh `/api/grading/*` terdaftar
+- `curl` student join + submit exam 2 essay (1 tidak dijawab) → `SUBMITTED`, `totalScore: null`
+- `curl` teacher GET `/api/grading/[attemptId]` → 2 essay, `pendingEssayCount: 2`, essay kosong `answer: null`
+- `curl` teacher PUT esai 1 score 3 → `SUBMITTED`, `totalScore: 3`, `pendingEssayCount: 1`
+- `curl` teacher PUT esai kosong score 0 (`baseRevision: 0`) → `GRADED`, `totalScore: 3`, `pendingEssayCount: 0`, `gradedAt` terisi
+- `psql` placeholder Answer → `answeredAt = submittedAt = 2026-10-27 08:07:54.02`, `score = 0`, `isCorrect = NULL`
+- `curl` teacher regrade setelah `GRADED` → `409`; admin PUT score 5 → `200`, `totalScore: 5`, `Attempt.gradedAt` tetap, `Answer.gradedAt` berubah, `Answer.gradedById = admin`
+- **Gate 1:** PATCH bank soal live (`questionText`, `explanation`, `points = 99`) setelah publish → GET grading tetap snapshot (`points: 3`, teks lama); `psql` menunjukkan `live_text != snapshot_text`, `live_points = 99`, `snapshot_points = 3`
+- **Gate 2 race:** `G2.9` dua essay concurrent → `GRADED`, total 7, `gradedAt` sekali; `G2.10` same essay concurrent → status `[200, 409]`, revision konsisten
+- **Lazy sweep:** `#29` 30 expired `IN_PROGRESS` → request pertama `swept: 25`, sisa 5; request kedua `swept: 5`, sisa 0
+
 ## Struktur Saat Ini
 
 ```text
@@ -874,6 +956,11 @@ app/
       _components/{exam-form.tsx, exam-filter-bar.tsx, exam-actions.tsx,
                   question-picker-dialog.tsx, token-card.tsx,
                   delete-exam-dialog.tsx, status-badge.tsx, types.ts}
+    teacher/grading/
+      page.tsx
+      [attemptId]/page.tsx
+      _components/{grading-filter-bar.tsx, score-form.tsx,
+                  swept-attempts-toast.tsx}
     student/
       page.tsx
       exams/
@@ -915,6 +1002,13 @@ app/
       [id]/submit/route.ts
       [id]/time/route.ts
       [id]/result/route.ts
+    grading/
+      _shared.ts
+      _score.ts
+      route.ts
+      [attemptId]/route.ts
+      [attemptId]/essays/[examQuestionId]/route.ts
+      [attemptId]/short-answers/[examQuestionId]/route.ts
     subjects/route.ts
   globals.css
   layout.tsx
@@ -940,7 +1034,9 @@ lib/
   questions/{answers.ts, labels.ts, query.ts}
   exams/{datetime.ts, labels.ts, query.ts, snapshot.ts, token.ts}
   attempts/{time.ts, shuffle.ts, grade.ts, payload.ts, service.ts}
-  zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts}
+  grading/{constants.ts, types.ts, recompute.ts, snapshot.ts, query.ts,
+            service.ts}
+  zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts, grading.ts}
 middleware.ts
 public/
   templates/{template-import-soal.xlsx, .docx, .pdf}
@@ -953,6 +1049,7 @@ tests/
   export.test.ts
   exams.test.ts
   attempts.test.ts
+  grading.test.ts
   fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
   setup.ts
 prisma/
@@ -997,7 +1094,7 @@ prisma/
 
 - **Token ujian belum punya rate limit.** Token 6 karakter dari 32 alphabet cukup besar, tetapi endpoint join bisa di-spam. Respons tetap generik `404`; tambahkan rate limit per IP/user sebelum produksi.
 - **Tidak ada session lock per attempt.** `revision` mencegah lost update, tetapi dua perangkat tetap bisa membuka attempt yang sama. Perlu kebijakan satu sesi aktif/anti-cheat di fase lanjutan.
-- **Lazy finalize adalah side effect pada GET.** Attempt `IN_PROGRESS` yang lewat expiry diselesaikan saat GET/join/submit/time. Tidak ada scheduler; attempt yang tidak pernah dibuka tetap menggantung sampai Fase 7 report menyentuhnya.
+- **Lazy finalize adalah side effect pada GET.** Attempt `IN_PROGRESS` yang lewat expiry diselesaikan saat GET/join/submit/time. Sejak Fase 7, dashboard grading juga melakukan lazy sweep maksimal 25 attempt per request; tidak ada scheduler/cron, jadi attempt yang tidak pernah tersentuh tetap menggantung sampai ada request terkait.
 - **`receivedAt` hanya untuk audit.** UI siswa menampilkan `submittedAt` (waktu efektif), bukan `receivedAt`. Teacher view Fase 7 sebaiknya membaca `receivedAt` untuk mendeteksi submit telat.
 - **Short answer rawan false negative.** Normalisasi hanya trim/lowercase/collapse whitespace + NFKC; `"3,14"` vs `"3.14"`, satuan, dan sinonim tidak ditangani. Fase 7 perlu koreksi manual per jawaban.
 - **Result page summary-only.** Belum ada review per soal, kunci jawaban, atau explanation untuk siswa. Ini disengaja agar kebijakan review ditentukan di Fase 7.
@@ -1006,6 +1103,18 @@ prisma/
 - **Data attempt korup tidak bisa direparasi lewat UI.** `questionOrder`/`optionOrder` invalid menghasilkan `500` eksplisit; perbaikan harus lewat SQL/admin tool.
 - **`selectedLabels` tidak punya CHECK constraint.** Validasi label ada di aplikasi, bukan database. Query/report Fase 8 harus tetap defensif.
 - **Seed mereset attempt demo.** `npm run db:seed` menghapus attempt pada `demo-exam-1` agar `ExamQuestion` bisa dibangun ulang tanpa melanggar FK `Restrict`. Jangan jalankan pada data produksi.
+
+### Penilaian essay
+
+- **Feedback per esai belum ada.** Fase 7 hanya menyimpan `score`; guru belum bisa meninggalkan komentar. Tambahkan `Answer.feedback String? @db.Text` di Fase 8/9.
+- **Audit hanya menyimpan aktor terakhir.** `Answer.gradedById`/`gradedAt` dan `Attempt.gradedById` bukan riwayat perubahan. Regrade berulang hanya menyisakan aktor terakhir; audit log penuh ditunda ke Fase 9.
+- **Short answer dapat dikoreksi TEACHER meski `GRADED`.** Ini pengecualian sengaja karena normalisasi short answer heuristik (lihat tech debt Fase 6). Nilai esai tetap terkunci untuk TEACHER setelah `GRADED`.
+- **Placeholder Answer untuk essay kosong.** Baris `Answer` buatan grading memakai `textAnswer: null`, `selectedLabels: []`, dan `answeredAt = submittedAt`. Query report Fase 8 harus memperlakukan baris ini sebagai “tidak dijawab”, bukan jawaban siswa.
+- **Tidak ada tombol finalize eksplisit.** Attempt otomatis `GRADED` saat esai terakhir disimpan; UI memakai dialog konfirmasi. Jika guru salah memasukkan nilai terakhir, koreksi harus lewat admin.
+- **Lazy sweep dibatasi 25 per request.** Jika ada >25 attempt expired, attempt sisanya baru difinalisasi saat dashboard dibuka lagi. Tidak ada scheduler/cron.
+- **Detail grading memuat seluruh essay sekaligus.** 200 soal × 20.000 karakter bisa menghasilkan payload besar; pagination essay belum ada.
+- **Tidak ada CHECK constraint `score >= 0` / `score <= points`.** Validasi hanya di aplikasi; query/report harus tetap defensif.
+- **Tidak ada rate limit endpoint grading.** Akses sudah dibatasi TEACHER/ADMIN dan scope exam, tetapi belum ada rate limit per user.
 
 ### Dependensi dan tooling
 
@@ -1020,13 +1129,14 @@ prisma/
 - Import menyimpan file sementara di filesystem lokal (`uploads/imports`). Pastikan direktori tidak dapat diakses publik; ganti dengan object storage bila deploy ke platform serverless dengan filesystem read-only.
 - Belum ada verifikasi email, reset password, dan manajemen sesi per perangkat.
 - `classroom` diisi lewat seed/admin; belum ada UI pengelolaan.
-- `@radix-ui/react-alert-dialog` ditambahkan khusus untuk konfirmasi hapus (komponen shadcn `alert-dialog`); tidak ada dependensi UI lain yang berubah.
+- `@radix-ui/react-alert-dialog` dipakai untuk konfirmasi hapus dan konfirmasi simpan esai terakhir (komponen shadcn `alert-dialog`); tidak ada dependensi UI lain yang berubah.
 
 ## Fase Berikutnya
 
-Fase 6 (pelaksanaan ujian) selesai. Fase berikutnya adalah penilaian essay/manual, rekap nilai, serta manajemen pengguna/mata pelajaran. Fase 7 wajib:
-- menilai `Answer` bertipe `ESSAY` (score/isCorrect masih `null`),
-- memindahkan attempt `SUBMITTED` → `GRADED` dan mengisi `gradedAt`,
-- menambahkan audit penilai (`gradedBy`) jika diperlukan,
-- membaca `receivedAt` untuk mendeteksi submit yang telat,
-- tidak membaca `snapshotJson` untuk query report; gunakan `Answer` dan `Attempt`.
+Fase 7 (penilaian essay) selesai. Fase berikutnya adalah rekap nilai/laporan, serta manajemen pengguna/mata pelajaran. Fase 8 disarankan:
+- rekap nilai per ujian/kelas/siswa; query dari `Attempt` + `Answer`, bukan dari `snapshotJson`,
+- export rekap (XLSX/PDF) dengan scope TEACHER/ADMIN,
+- statistik distribusi nilai, tingkat kelulusan, dan daftar siswa belum mengumpulkan,
+- tampilan hasil per soal untuk siswa (opsional, dengan kebijakan `showResult`),
+- audit log penuh untuk perubahan nilai/manual override,
+- pertimbangkan feedback per esai dan tombol finalize eksplisit berdasarkan kebutuhan guru.
