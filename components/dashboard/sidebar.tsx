@@ -39,6 +39,14 @@ function navItemsForRole(role: Role): NavItem[] {
     });
   }
 
+  if (role === "STUDENT") {
+    items.push({
+      href: "/student/exams",
+      label: "Ujian Saya",
+      icon: ClipboardList,
+    });
+  }
+
   items.push({ href: "/smoke", label: "Smoke test", icon: FlaskConical });
 
   return items;
@@ -81,7 +89,7 @@ export function DashboardSidebar({ role }: { role: Role }) {
       </nav>
 
       <div className="border-t p-4 text-xs text-muted-foreground">
-        Fase 5 &middot; Bank Soal + Ujian
+        Fase 6 &middot; Pelaksanaan Ujian
       </div>
     </aside>
   );

@@ -553,6 +553,88 @@ Snapshot dibangun di dalam transaksi yang sama dengan conditional `DRAFT → PUB
 - **`totalPoints` tidak disimpan**. Dihitung dari `pointsOverride ?? snapshot.points` saat detail dibaca.
 - **Seed** menyertakan `demo-exam-1` berstatus DRAFT dengan 3 soal MTK untuk verifikasi manual.
 
+## Pelaksanaan Ujian (Fase 6)
+
+Siswa mengerjakan ujian di `/student/exams`. Alurnya: **login → gabung dengan token → kerjakan → autosave → submit → hasil**. Konten selalu dibaca dari snapshot `ExamQuestion.snapshotJson`, tidak pernah dari `Question`/`QuestionOption` live.
+
+### Matriks akses
+
+| Path | STUDENT | TEACHER / ADMIN |
+|---|---|---|
+| `/student/exams`, `/student/exams/*` | ✅ | 403 |
+| `/api/attempts`, `/api/attempts/*` | ✅ (hanya attempt sendiri) | 403 |
+
+`/api/*` tidak tercakup middleware, jadi setiap route attempt memanggil `requireRole(["STUDENT"])`. Attempt milik siswa lain selalu `404` (tidak membocorkan keberadaan).
+
+### Status attempt
+
+```text
+IN_PROGRESS ──submit/expiry──> SUBMITTED (ada essay) ──Fase 7──> GRADED
+     │
+     └──submit/expiry tanpa essay──> GRADED
+```
+
+- `SUBMITTED` = sudah submit, masih menunggu penilaian essay.
+- `GRADED` = semua soal objektif, atau essay sudah dinilai.
+- `submittedAt` = `min(now, expiresAt)`.
+- `receivedAt` = waktu server benar-benar menerima submit (audit).
+- Tidak ada cron. Attempt `IN_PROGRESS` yang lewat `expiresAt` di-finalize secara lazy saat GET/join/submit/time.
+
+### Endpoint
+
+| Method | Path | Keterangan |
+|---|---|---|
+| `GET` | `/api/attempts` | List attempt milik siswa + status; tanpa token/jawaban. |
+| `POST` | `/api/attempts/join` | Body `{ token }`; normalize case-insensitive; create `201` atau resume `200`. |
+| `GET` | `/api/attempts/[id]` | State lengkap untuk resume. `IN_PROGRESS` mengembalikan soal; status lain hanya ringkasan. |
+| `PATCH` | `/api/attempts/[id]/answers/[examQuestionId]` | Autosave dengan `baseRevision` (optimistic concurrency). |
+| `POST` | `/api/attempts/[id]/submit` | Finalize + auto-grade objektif; idempotent `200`. |
+| `GET` | `/api/attempts/[id]/time` | `serverNow`, `expiresAt`, `remainingMs`, `status` untuk drift correction. |
+| `GET` | `/api/attempts/[id]/result` | Hasil summary-only; `403` jika `showResult = false`. |
+
+### Gate A — timer server-authoritative
+
+- Join hanya jika `status = PUBLISHED` dan `startAt <= now < endAt`; exam DRAFT/CLOSED dan jadwal lewat tetap ditolak meski token valid.
+- `expiresAt = min(startedAt + durationMinutes, exam.endAt)`. Contoh: durasi 90 menit, `endAt` 30 menit lagi → sisa efektif 30 menit.
+- Autosave setelah `expiresAt` → `403`. Submit setelah `expiresAt` tetap diterima, tetapi `submittedAt` di-cap ke `expiresAt`; `receivedAt` menyimpan waktu aktual.
+- Client hanya menampilkan timer. `serverNow` dari server dipakai untuk menghitung offset; polling `/time` tiap 60 detik dan saat tab kembali visible.
+- Attempt existing dikembalikan lebih dulu (resume/result), bahkan jika jadwal sudah lewat atau exam CLOSED. Kebijakan: CLOSED memblokir join baru, tetapi attempt `IN_PROGRESS` tetap boleh lanjut sampai `expiresAt`.
+
+### Gate B — autosave revision-safe
+
+- `Answer.revision` mulai 1. Client mengirim `baseRevision`; server hanya update jika revisi cocok.
+- `updateMany` atomik + `{ revision: { increment: 1 } }`. Stale → `200 { updated: false, reason: "stale", answer }`, bukan error, agar client tidak retry storm.
+- Client men-serialisasi request per soal dan mengirim ulang jawaban terbaru setelah response. `baseRevision: 0` = belum ada Answer.
+- Multi-answer **replace**, bukan merge. `["A","C"]` lalu `["C"]` menyimpan `["C"]`.
+- Tidak memakai `clientTimestamp`; membandingkan clock client dengan `answeredAt` server rawan skew.
+
+### Gate C — answer key tidak bocor
+
+- Endpoint siswa memakai `toExamQuestionView(..., { forStudent: true })`, lalu memilih field aman saja (`examQuestionId`, `type`, `questionText`, `points`, `options`, `answer`).
+- **`SHORT_ANSWER`/`ESSAY` selalu `options: []`.** Ini kritis: `forStudent: true` membuang `isCorrect`, tetapi pada `SHORT_ANSWER` teks kunci ada di `options[].text`.
+- `explanation`, `questionId` bank, `subjectId`, `difficulty`, `sourceUpdatedAt`, `isCorrect`, `score` tidak pernah dikirim.
+- Setelah submit, GET attempt tidak mengembalikan `questions` sama sekali.
+- Gate test memakai string grep **dan** recursive traversal, plus test fixture-independent yang mengiterasi setiap teks opsi `SHORT_ANSWER`.
+
+### Gate D — shuffle reproducible
+
+- `shuffleQuestions` → `Attempt.questionOrder String[]` berisi `ExamQuestion.id`.
+- `shuffleOptions` → `Attempt.optionOrder` map `ExamQuestion.id → label[]`.
+- Fisher-Yates dengan `crypto.randomInt`; tidak ada re-shuffle saat GET.
+- `TRUE_FALSE` tidak pernah di-shuffle.
+- `questionOrder`/`optionOrder` divalidasi saat baca. Data korup → `500` eksplisit, bukan fallback silent.
+
+### UI
+
+- `/student/exams` — ujian aktif (info + status attempt) dan riwayat; tombol **Gabung ujian** membuka modal token.
+- `/student/exams/[id]/take` — timer sticky, progress bar, navigasi soal, tanda ragu-ragu (client-only), autosave per soal, submit dengan konfirmasi.
+- `/student/exams/[id]/result` — summary-only: skor, waktu submit, status menunggu penilaian. Tidak ada kunci jawaban.
+- Komponen baru memakai native radio/checkbox dan `<div>` progress; tidak menambah dependency UI.
+
+### Seed
+
+`demo-exam-1` sekarang **PUBLISHED** dan berada dalam window aktif (`now - 1 jam` s/d `now + 2 jam`), token **`DEMO26`**, dengan 5 soal: single choice, multiple choice, true/false, short answer, dan essay. Re-run `npm run db:seed` akan mereset attempt demo untuk exam tersebut.
+
 ## Testing
 
 ```bash
@@ -628,7 +710,17 @@ Test memakai user/subject khusus dan filter `search` berprefix unik, sehingga ti
 
 Test memakai user/subject khusus, judul berprefix unik, dan cleanup `afterAll`, sehingga aman terhadap parallel test file lain.
 
-Total **66 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams).
+`tests/attempts.test.ts` menguji Fase 6 secara langsung, termasuk empat gate:
+
+- **Gate A (A1–A11):** join window, `expiresAt = min(...)`, join sebelum/sesudah jadwal, DRAFT/CLOSED, autosave setelah expiry `403`, submit setelah expiry dengan `submittedAt` cap, `receivedAt` audit, serta `/time`.
+- **Gate B (B1–B6):** create/update revision, stale `200`, `baseRevision: 0` saat Answer sudah ada, multi-answer replace, label/payload invalid `400`.
+- **Gate C (C1–C9):** tidak ada `isCorrect`/`explanation`/`correctAnswers`/`score`; recursive traversal; `SHORT_ANSWER`/`ESSAY` `options: []`; teks kunci short answer tidak muncul; teacher endpoint tetap punya kunci; setelah submit tidak ada `questions`.
+- **Gate D (D1–D7):** `questionOrder`/`optionOrder` persisten, GET 2× identik, `TRUE_FALSE` tidak di-shuffle, unit test Fisher-Yates, dan data korup → `500` eksplisit.
+- **Functional:** token case-insensitive, double join idempotent, ownership `404`, TEACHER `403`, resume, list scope, result gating, concurrent lazy-finalize + submit, grading semua tipe, essay `SUBMITTED`, double submit idempotent, serta pure helper grading.
+
+Test memakai fixture unik dan cleanup berurutan `answers → attempts → examQuestions → exams → questions → subjects → users` karena FK `Restrict`. Cleanup diverifikasi dengan assertion jumlah attempt = 0.
+
+Total **110 test** (7 auth + 9 questions + 10 import + 6 export + 34 exams + 44 attempts).
 
 ## Verifikasi Fase 1
 
@@ -730,6 +822,24 @@ Dijalankan pada Node 24.22.0 (npm 11.19.1):
 - Gate answer-key isolation diverifikasi di `tests/exams.test.ts`: `toExamQuestionView(forStudent: true)` tidak memiliki `explanation` dan tidak ada `isCorrect` pada opsi
 - Gate snapshot versioning diverifikasi: `parseExamSnapshot({ ...snapshot, extraField: "future-data" })` tetap valid dan membuang `extraField`
 
+## Verifikasi Fase 6
+
+Dijalankan pada Node 24-compatible runtime:
+
+- `npx prisma migrate dev --name add_exam_attempts` → migration `20261027072159_add_exam_attempts` diterapkan
+- `npx tsc --noEmit` → lolos
+- `npm run lint` → lolos tanpa warning
+- `npm test` → **110 test** lolos (6 file)
+- `npm run build` → lolos; route `/student/exams`, `/student/exams/[id]/take`, `/student/exams/[id]/result`, dan seluruh `/api/attempts/*` terdaftar dinamis
+- `npm run db:seed` → `demo-exam-1` PUBLISHED, token `DEMO26`, 5 soal (single, multi, true/false, short, essay), snapshot JSON terisi
+- `curl` login STUDENT → `POST /api/attempts/join` token `" demo26 "` → `201 IN_PROGRESS`
+- `curl` GET attempt → `maxScore = 10`, 5 soal, `SHORT_ANSWER.options = []`, `ESSAY.options = []`
+- `curl` PATCH 5 jawaban → semua `updated: true`, `revision: 1`; GET ulang → jawaban/urutan/`expiresAt` sama
+- String grep payload siswa: `isCorrect` = 0 match, `explanation` = 0 match; teks kunci short answer `"72"` tidak muncul pada payload yang belum dijawab
+- `psql` `attempts.questionOrder` berisi 5 `ExamQuestion.id`; `optionOrder` hanya berisi 2 soal pilihan (TRUE_FALSE tidak di-shuffle)
+- Gate A10 via `curl`: `expiresAt` dimundurkan 5 menit → submit `200`, `submittedAt = 2026-10-27T07:26:04.201Z`, `receivedAt = 2026-10-27T07:31:04.293Z`, `receivedAt > submittedAt = true`
+- Result endpoint → `SUBMITTED`, `totalScore: null`, pesan “Menunggu penilaian essay oleh guru.”
+
 ## Struktur Saat Ini
 
 ```text
@@ -764,7 +874,14 @@ app/
       _components/{exam-form.tsx, exam-filter-bar.tsx, exam-actions.tsx,
                   question-picker-dialog.tsx, token-card.tsx,
                   delete-exam-dialog.tsx, status-badge.tsx, types.ts}
-    student/page.tsx
+    student/
+      page.tsx
+      exams/
+        page.tsx
+        [id]/take/page.tsx
+        [id]/result/page.tsx
+        _components/{attempt-status-badge.tsx, join-exam-dialog.tsx,
+                     take-exam-client.tsx}
   403/page.tsx
   api/
     auth/
@@ -789,6 +906,15 @@ app/
       [id]/questions/route.ts
       [id]/publish/route.ts
       [id]/close/route.ts
+    attempts/
+      _shared.ts
+      route.ts
+      join/route.ts
+      [id]/route.ts
+      [id]/answers/[examQuestionId]/route.ts
+      [id]/submit/route.ts
+      [id]/time/route.ts
+      [id]/result/route.ts
     subjects/route.ts
   globals.css
   layout.tsx
@@ -813,7 +939,8 @@ lib/
   exporters/{shared.ts, xlsx.ts, pdf.ts, pdf-document.tsx}
   questions/{answers.ts, labels.ts, query.ts}
   exams/{datetime.ts, labels.ts, query.ts, snapshot.ts, token.ts}
-  zod-schemas/{auth.ts, exam.ts, question.ts}
+  attempts/{time.ts, shuffle.ts, grade.ts, payload.ts, service.ts}
+  zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts}
 middleware.ts
 public/
   templates/{template-import-soal.xlsx, .docx, .pdf}
@@ -825,6 +952,7 @@ tests/
   import.test.ts
   export.test.ts
   exams.test.ts
+  attempts.test.ts
   fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
   setup.ts
 prisma/
@@ -862,10 +990,22 @@ prisma/
 - **Pencarian judul memakai `contains`/ILIKE tanpa index.** `GET /api/exams?search=` memakai `contains` case-insensitive pada `exams.title`; B-tree tidak membantu pola `%...%`. Untuk data besar, tambahkan `pg_trgm` + GIN index pada `title`.
 - **Snapshot JSON tidak diindeks untuk pencarian.** Report Fase 8 sebaiknya membaca attempt/answer, bukan melakukan query teks ke `snapshotJson`. Kalau perlu, tambahkan GIN index pada kolom JSONB.
 - **Response detail memuat seluruh soal.** Batas 200 soal × teks maksimal 20.000 karakter bisa menghasilkan response beberapa MB (worst case ~4 MB) sebelum JSON overhead. Preview bertahap/pagination atau endpoint preview terpisah bisa ditambahkan bila diperlukan.
-- **Urutan acak belum reproducible.** `shuffleQuestions`/`shuffleOptions` baru berupa flag; Fase 6 harus menyimpan urutan/seed per attempt.
-- **Tidak ada auto-close berdasarkan `endAt`.** `CLOSED` hanya transisi manual. Fase 6 tetap harus menolak akses di luar jadwal, meskipun status masih `PUBLISHED`.
 - **Zona waktu UI diasumsikan WIB (UTC+7).** Server menyimpan UTC; label dan konversi `datetime-local` memakai offset tetap `+07:00`. Jika ada sekolah di zona waktu lain, tambahkan pilihan timezone.
 - **Draft dengan soal yang sudah dihapus disembunyikan dari editor.** Detail menampilkan warning, tetapi menyimpan editor akan menghapus baris yang tidak valid. Ini disengaja agar draft bisa dibersihkan; perlu konfirmasi eksplisit bila UX dianggap terlalu agresif.
+
+### Pelaksanaan ujian
+
+- **Token ujian belum punya rate limit.** Token 6 karakter dari 32 alphabet cukup besar, tetapi endpoint join bisa di-spam. Respons tetap generik `404`; tambahkan rate limit per IP/user sebelum produksi.
+- **Tidak ada session lock per attempt.** `revision` mencegah lost update, tetapi dua perangkat tetap bisa membuka attempt yang sama. Perlu kebijakan satu sesi aktif/anti-cheat di fase lanjutan.
+- **Lazy finalize adalah side effect pada GET.** Attempt `IN_PROGRESS` yang lewat expiry diselesaikan saat GET/join/submit/time. Tidak ada scheduler; attempt yang tidak pernah dibuka tetap menggantung sampai Fase 7 report menyentuhnya.
+- **`receivedAt` hanya untuk audit.** UI siswa menampilkan `submittedAt` (waktu efektif), bukan `receivedAt`. Teacher view Fase 7 sebaiknya membaca `receivedAt` untuk mendeteksi submit telat.
+- **Short answer rawan false negative.** Normalisasi hanya trim/lowercase/collapse whitespace + NFKC; `"3,14"` vs `"3.14"`, satuan, dan sinonim tidak ditangani. Fase 7 perlu koreksi manual per jawaban.
+- **Result page summary-only.** Belum ada review per soal, kunci jawaban, atau explanation untuk siswa. Ini disengaja agar kebijakan review ditentukan di Fase 7.
+- **`@@unique([examId, studentId])` mengunci retake.** Retake Fase 9 memerlukan `attemptNumber` + migrasi unique, bukan hard-delete attempt (histori nilai hilang).
+- **Anti-cheat belum ada.** `tabSwitchCount` sengaja ditunda. Tidak ada deteksi blur, copy/paste, atau watermark soal.
+- **Data attempt korup tidak bisa direparasi lewat UI.** `questionOrder`/`optionOrder` invalid menghasilkan `500` eksplisit; perbaikan harus lewat SQL/admin tool.
+- **`selectedLabels` tidak punya CHECK constraint.** Validasi label ada di aplikasi, bukan database. Query/report Fase 8 harus tetap defensif.
+- **Seed mereset attempt demo.** `npm run db:seed` menghapus attempt pada `demo-exam-1` agar `ExamQuestion` bisa dibangun ulang tanpa melanggar FK `Restrict`. Jangan jalankan pada data produksi.
 
 ### Dependensi dan tooling
 
@@ -884,4 +1024,9 @@ prisma/
 
 ## Fase Berikutnya
 
-Fase 5 (manajemen ujian + snapshot publish) selesai. Fase berikutnya mencakup pelaksanaan CBT (attempt), penilaian otomatis/manual, rekap nilai, serta manajemen pengguna/mata pelajaran. Fase 6 wajib memakai `ExamQuestion.snapshotJson` sebagai sumber konten dan `toExamQuestionView(..., { forStudent: true })` untuk endpoint siswa.
+Fase 6 (pelaksanaan ujian) selesai. Fase berikutnya adalah penilaian essay/manual, rekap nilai, serta manajemen pengguna/mata pelajaran. Fase 7 wajib:
+- menilai `Answer` bertipe `ESSAY` (score/isCorrect masih `null`),
+- memindahkan attempt `SUBMITTED` → `GRADED` dan mengisi `gradedAt`,
+- menambahkan audit penilai (`gradedBy`) jika diperlukan,
+- membaca `receivedAt` untuk mendeteksi submit yang telat,
+- tidak membaca `snapshotJson` untuk query report; gunakan `Answer` dan `Attempt`.

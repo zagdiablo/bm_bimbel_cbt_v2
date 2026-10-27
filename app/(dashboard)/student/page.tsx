@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { CalendarClock, History } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -8,19 +10,43 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  listStudentAttempts,
+  listStudentExams,
+} from "@/lib/attempts/service";
 import { requirePageRole } from "@/lib/auth-helpers";
 
 export const metadata: Metadata = {
   title: "Dashboard Siswa",
 };
 
-const stats = [
-  { label: "Ujian tersedia", hint: "Ujian yang dibuka", icon: CalendarClock },
-  { label: "Riwayat nilai", hint: "Hasil ujian sebelumnya", icon: History },
-];
-
 export default async function StudentPage() {
   const user = await requirePageRole(["STUDENT"], "/student");
+  const [exams, attempts] = await Promise.all([
+    listStudentExams(user.id),
+    listStudentAttempts(user.id),
+  ]);
+  const unfinished = attempts.items.filter(
+    (attempt) => attempt.status === "IN_PROGRESS",
+  ).length;
+
+  const stats = [
+    {
+      label: "Ujian aktif",
+      value: exams.items.length,
+      hint: "Ujian yang sedang dibuka",
+      icon: CalendarClock,
+    },
+    {
+      label: "Riwayat ujian",
+      value: attempts.items.length,
+      hint:
+        unfinished > 0
+          ? `${unfinished} attempt masih berjalan`
+          : "Termasuk ujian yang sudah selesai",
+      icon: History,
+    },
+  ];
 
   return (
     <div className="flex flex-col gap-6">
@@ -43,8 +69,8 @@ export default async function StudentPage() {
                 <Icon className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">—</div>
-                <CardDescription>Belum ada data</CardDescription>
+                <div className="text-2xl font-bold">{stat.value}</div>
+                <CardDescription>{stat.hint}</CardDescription>
               </CardContent>
             </Card>
           );
@@ -53,12 +79,17 @@ export default async function StudentPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Modul berikutnya</CardTitle>
+          <CardTitle>Ujian Saya</CardTitle>
           <CardDescription>
-            Daftar ujian, pengerjaan soal, dan rekap nilai dikerjakan pada fase
-            selanjutnya.
+            Lihat ujian yang sedang dibuka, gabung dengan token dari guru, dan
+            lanjutkan ujian yang sudah dimulai.
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <Button asChild>
+            <Link href="/student/exams">Buka daftar ujian</Link>
+          </Button>
+        </CardContent>
       </Card>
     </div>
   );

@@ -47,6 +47,12 @@ enum ExamStatus {
   CLOSED
 }
 
+enum AttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  GRADED
+}
+
 model User {
   id            String   @id @default(cuid())
   name          String
@@ -64,6 +70,7 @@ model User {
   questions  Question[]
   importJobs ImportJob[]
   exams      Exam[]
+  attempts   Attempt[]
 
   @@map("users")
 }
@@ -219,6 +226,7 @@ model Exam {
   subject   Subject        @relation(fields: [subjectId], references: [id], onDelete: Restrict)
   owner     User           @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   questions ExamQuestion[]
+  attempts  Attempt[]
 
   @@index([ownerId, createdAt])
   @@index([subjectId])
@@ -238,9 +246,58 @@ model ExamQuestion {
 
   exam     Exam      @relation(fields: [examId], references: [id], onDelete: Cascade)
   question Question? @relation(fields: [questionId], references: [id], onDelete: SetNull)
+  answers  Answer[]
 
   @@unique([examId, questionId])
   @@index([examId, order])
   @@index([questionId])
   @@map("exam_questions")
+}
+
+model Attempt {
+  id            String        @id @default(cuid())
+  examId        String
+  studentId     String
+  status        AttemptStatus @default(IN_PROGRESS)
+  startedAt     DateTime      @default(now())
+  expiresAt     DateTime
+  submittedAt   DateTime?
+  receivedAt    DateTime?
+  gradedAt      DateTime?
+  totalScore    Int?
+  maxScore      Int
+  questionOrder String[]
+  optionOrder   Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  exam    Exam     @relation(fields: [examId], references: [id], onDelete: Restrict)
+  student User     @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  answers Answer[]
+
+  @@unique([examId, studentId])
+  @@index([studentId, status])
+  @@index([examId, status])
+  @@index([status, expiresAt])
+  @@map("attempts")
+}
+
+model Answer {
+  id             String   @id @default(cuid())
+  attemptId      String
+  examQuestionId String
+  selectedLabels String[] @default([])
+  textAnswer     String?  @db.Text
+  isCorrect      Boolean?
+  score          Int?
+  revision       Int      @default(1)
+  answeredAt     DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  attempt      Attempt      @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  examQuestion ExamQuestion @relation(fields: [examQuestionId], references: [id], onDelete: Restrict)
+
+  @@unique([attemptId, examQuestionId])
+  @@index([examQuestionId])
+  @@map("answers")
 }

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { Difficulty, QuestionType, Role } from "@prisma/client";
 import { auth } from "../lib/auth";
+import { buildExamSnapshot } from "../lib/exams/snapshot";
 import { prisma } from "../lib/prisma";
 
 const demoUsers = [
@@ -182,9 +183,28 @@ async function seedDemoExam() {
   const subject = await prisma.subject.findUniqueOrThrow({
     where: { code: "MTK" },
   });
+  const demoStudent = await prisma.user.findUnique({
+    where: { email: "student@cbt.local" },
+    select: { id: true },
+  });
+  const nonDemoAttempts = await prisma.attempt.count({
+    where: {
+      examId: "demo-exam-1",
+      ...(demoStudent ? { studentId: { not: demoStudent.id } } : {}),
+    },
+  });
+
+  if (nonDemoAttempts > 0) {
+    throw new Error(
+      `Seed dibatalkan: demo-exam-1 memiliki ${nonDemoAttempts} attempt non-demo. ` +
+        "Jalankan db:reset atau hapus attempt tersebut secara eksplisit.",
+    );
+  }
+
   const now = Date.now();
-  const startAt = new Date(now + 24 * 60 * 60 * 1000);
-  const endAt = new Date(now + 48 * 60 * 60 * 1000);
+  const startAt = new Date(now - 60 * 60 * 1000);
+  const endAt = new Date(now + 2 * 60 * 60 * 1000);
+  const publishedAt = new Date(now);
 
   const exam = await prisma.exam.upsert({
     where: { id: "demo-exam-1" },
@@ -195,12 +215,12 @@ async function seedDemoExam() {
       durationMinutes: 90,
       startAt,
       endAt,
-      token: null,
+      token: "DEMO26",
       shuffleQuestions: false,
       shuffleOptions: true,
       showResult: true,
-      status: "DRAFT",
-      publishedAt: null,
+      status: "PUBLISHED",
+      publishedAt,
       closedAt: null,
     },
     create: {
@@ -211,21 +231,53 @@ async function seedDemoExam() {
       durationMinutes: 90,
       startAt,
       endAt,
+      token: "DEMO26",
       shuffleQuestions: false,
       shuffleOptions: true,
       showResult: true,
-      status: "DRAFT",
+      status: "PUBLISHED",
+      publishedAt,
     },
   });
 
+  // Hanya attempt milik siswa demo yang di-reset. Attempt user lain pada
+  // demo-exam-1 sudah ditolak di atas, sehingga histori real tidak terhapus.
+  // Answers ikut cascade saat attempt dihapus. Baru setelah itu ExamQuestion
+  // dibangun ulang (FK Answer→ExamQuestion memakai Restrict).
+  if (demoStudent) {
+    await prisma.attempt.deleteMany({
+      where: { examId: exam.id, studentId: demoStudent.id },
+    });
+  }
   await prisma.examQuestion.deleteMany({ where: { examId: exam.id } });
-  await prisma.examQuestion.createMany({
-    data: ["demo-q1", "demo-q2", "demo-q3"].map((questionId, index) => ({
-      examId: exam.id,
-      questionId,
-      order: index + 1,
-    })),
-  });
+
+  const demoQuestionIds = [
+    "demo-q1",
+    "demo-q2",
+    "demo-q3",
+    "demo-q4",
+    "demo-q5",
+  ];
+
+  for (const [index, questionId] of demoQuestionIds.entries()) {
+    const question = await prisma.question.findUniqueOrThrow({
+      where: { id: questionId },
+      include: {
+        options: {
+          orderBy: [{ order: "asc" }, { label: "asc" }],
+        },
+      },
+    });
+
+    await prisma.examQuestion.create({
+      data: {
+        examId: exam.id,
+        questionId,
+        order: index + 1,
+        snapshotJson: buildExamSnapshot(question, publishedAt),
+      },
+    });
+  }
 }
 
 async function main() {
