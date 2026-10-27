@@ -1,4 +1,3 @@
-import { cache } from "react";
 import type { Prisma, Role } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
@@ -148,32 +147,14 @@ export function toQuestionData(input: QuestionInput) {
   };
 }
 
-export const subjectSelect = {
-  id: true,
-  name: true,
-  code: true,
-} satisfies Prisma.SubjectSelect;
-
-export type SubjectOption = Prisma.SubjectGetPayload<{
-  select: typeof subjectSelect;
-}>;
-
 /**
- * Mata pelajaran bersifat kurikulum bersama: TEACHER maupun ADMIN boleh
- * memakainya sebagai filter/relasi soal. CRUD subject baru ada di Fase 9.
+ * Data-access subject pindah ke `lib/subjects/query.ts` sejak Fase 10.
+ * Re-export dipertahankan agar 20+ import lama (dropdown soal/ujian/report)
+ * tidak perlu diubah dan tidak regress.
  */
-export const listSubjects = cache(async (): Promise<SubjectOption[]> => {
-  return prisma.subject.findMany({
-    orderBy: { name: "asc" },
-    select: subjectSelect,
-  });
-});
-
-export async function subjectExists(subjectId: string): Promise<boolean> {
-  const subject = await prisma.subject.findUnique({
-    where: { id: subjectId },
-    select: { id: true },
-  });
-
-  return subject !== null;
-}
+export {
+  listSubjects,
+  subjectExists,
+  subjectSelect,
+  type SubjectOption,
+} from "@/lib/subjects/query";

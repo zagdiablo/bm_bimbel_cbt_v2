@@ -1,6 +1,6 @@
 # CBT App
 
-Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 9**: fondasi auth/RBAC, Bank Soal CRUD + import/export, manajemen ujian dengan snapshot & token, pelaksanaan ujian server-authoritative, penilaian essay/short-answer, laporan & export hasil, serta **analisis butir soal** dan audit trail publish/close. Workspace guru juga bisa diakses ADMIN.
+Aplikasi Computer Based Test (CBT) untuk sekolah/kampus. Repository ini berada di **Fase 10**: fondasi auth/RBAC, Bank Soal CRUD + import/export, **manajemen mapel**, manajemen ujian dengan snapshot & token, pelaksanaan ujian server-authoritative, penilaian essay/short-answer, laporan & export hasil, serta analisis butir soal dan audit trail publish/close. Workspace guru juga bisa diakses ADMIN.
 
 ## Prasyarat
 
@@ -181,7 +181,7 @@ Setelah login, user diarahkan ke `redirect` yang diminta (bila ada), lalu `redir
 | `/teacher/*` | ✅ (super-user) | ✅ | 403 |
 | `/student/*` | 403 | 403 | ✅ |
 | `/dashboard` | → `/admin` | → `/teacher` | → `/student` |
-| `/api/questions`, `/api/questions/[id]`, `/api/subjects` | ✅ | ✅ | 403 |
+| `/api/questions`, `/api/questions/[id]`, `/api/subjects`, `/api/subjects/[id]` | ✅ | ✅ | 403 |
 
 Middleware dan server guard sama-sama memakai union `["TEACHER", "ADMIN"]` untuk `/teacher/*`, sehingga ADMIN memakai route guru yang sama tanpa duplikasi halaman.
 
@@ -203,9 +203,12 @@ Middleware dan server guard sama-sama memakai union `["TEACHER", "ADMIN"]` untuk
 | `GET` | `/api/questions/[id]` | Detail + opsi (diurutkan `order`). |
 | `PATCH` | `/api/questions/[id]` | **Full replace** (bukan partial): seluruh field + opsi dikirim ulang. |
 | `DELETE` | `/api/questions/[id]` | Soft-delete (`deletedAt = now()`). |
-| `GET` | `/api/subjects` | `[{ id, name, code }]` untuk dropdown. Read-only. |
+| `GET` | `/api/subjects` | Tanpa flag → `[{ id, name, code }]` untuk dropdown. `?search=` filter nama/kode; `?withStats=1` menambah `_count`. |
+| `POST` | `/api/subjects` | Buat mapel; `code` dinormalisasi uppercase; duplicate → `409`. |
+| `PATCH` | `/api/subjects/[id]` | `{ name, code? }`; duplicate selain dirinya → `409`. |
+| `DELETE` | `/api/subjects/[id]` | Hard-delete; `409` + `details` jika masih dipakai soal/ujian. |
 
-Semua endpoint memakai `requireRole(["TEACHER", "ADMIN"])`. Validasi body memakai `questionInputSchema`; error validasi → `400` dengan `errors` hasil `flatten().fieldErrors`.
+Semua endpoint memakai `requireRole(["TEACHER", "ADMIN"])`. Validasi body soal memakai `questionInputSchema`; error validasi → `400` dengan `errors` hasil `flatten().fieldErrors`. Detail aturan mapel ada di §Manajemen Mapel (Fase 10).
 
 ### Validasi soal
 
@@ -244,7 +247,7 @@ Halaman edit menormalkan kembali baris tersebut lewat `fromStoredOptions()`, jad
 
 ### Keputusan default
 
-- **Mata pelajaran bersifat bersama.** TEACHER maupun ADMIN dapat memilih semua subject; kepemilikan soal tetap pada `ownerId` soal. CRUD subject belum ada; kandidat Roadmap Fase 11.
+- **Mata pelajaran bersifat bersama.** TEACHER maupun ADMIN dapat memilih dan mengelola semua subject; `Subject.ownerId` hanya audit trail creator, bukan scope kepemilikan. Kepemilikan soal tetap pada `ownerId` soal.
 - **PATCH = full replace.** Lebih sederhana dan aman untuk opsi: hapus opsi lama + buat opsi baru dalam satu `prisma.$transaction`, sehingga tidak bentrok dengan `@@unique([questionId, label])`.
 - **ADMIN mengedit soal guru** tetap mempertahankan `ownerId` guru tersebut.
 - **Soft-delete** dipilih agar soal yang sudah dipakai ujian tidak hilang; belum ada UI restore (lihat utang teknis).
@@ -824,6 +827,32 @@ Kode: `lib/analytics/{stats,query,types,labels}.ts`, route `app/api/reports/[exa
 - Detail ujian dan detail laporan menampilkan nama publisher/closer.
 - Audit ini **bukan riwayat penuh**: regrade/publish ulang tidak menyimpan histori. Log audit penuh tetap tech debt (lihat Roadmap).
 
+## Manajemen Mapel (Fase 10)
+
+Halaman: `/teacher/subjects` (TEACHER + ADMIN). STUDENT `403`. Mapel adalah domain bersama: tidak ada scope `ownerId`; `Subject.ownerId` hanya audit trail creator.
+
+### Endpoint
+
+| Method | Path | Keterangan |
+|---|---|---|
+| `GET` | `/api/subjects` | Tanpa `withStats` → `[{ id, name, code }]` (backward-compatible dropdown). `?search=` memfilter nama/kode case-insensitive. `?withStats=1` → menambah `_count: { questions, exams }`. |
+| `POST` | `/api/subjects` | Body `{ name, code }`; `code` dinormalisasi uppercase; duplicate → `409`; sukses `201` → `{ id, name, code }`. |
+| `PATCH` | `/api/subjects/[id]` | Body `{ name, code? }`; `code` opsional dan dinormalisasi uppercase; duplicate selain dirinya → `409`; sukses `200` → `{ id, name, code }`. |
+| `DELETE` | `/api/subjects/[id]` | Hard-delete. Jika masih dipakai → `409 { message, details: { questionCount, examCount } }`; sukses `200 { deleted: true, id }`. |
+
+### Aturan dan keputusan
+
+- **Code uppercase.** `mtk`/`Mtk` → `MTK` sebelum disimpan. Duplicate dicek case-insensitive (`mode: "insensitive"`) dan `P2002` tetap ditangkap sebagai `409` (race + data lama lowercase).
+- **Delete guard menghitung SEMUA soal termasuk soft-deleted.** `Question.deletedAt` tidak menghapus baris; FK `Restrict` tetap memblokir. Karena itu `getSubjectUsage()` sengaja tidak memakai filter `deletedAt: null`, dan `_count` di UI juga menghitung arsip.
+- **P2003 tetap 409.** Jika ada insert question/exam setelah count, FK error ditangkap, count dihitung ulang, dan response tetap `409` + `details` (bukan `500`).
+- **Hard-delete, bukan soft-delete.** `Subject` tidak punya kolom `deletedAt`; mapel hanya bisa dihapus jika tidak dipakai.
+- **Tanpa pagination dan tanpa filter owner.** Jumlah mapel dianggap < 100; semua TEACHER/ADMIN melihat daftar yang sama.
+- **Search tanpa index.** `contains`/ILIKE pada `name`/`code`; cukup untuk skala MVP, `pg_trgm` masuk Roadmap performa.
+- **Nama mapel boleh sama**; hanya `code` yang unique.
+- **`PATCH` bukan full replace.** `name` wajib karena form edit selalu pre-filled; `code` opsional. Body kosong ditolak `400`.
+
+Kode: `lib/subjects/query.ts`, `lib/zod-schemas/subject.ts`, route `app/api/subjects/`, UI `app/(dashboard)/teacher/subjects/`.
+
 ## Deployment & Production Checklist
 
 Prasyarat: Node.js `>=22 <24`, PostgreSQL, npm.
@@ -1015,7 +1044,21 @@ Test memakai fixture unik dan cleanup berurutan `answers → attempts → examQu
 
 `tests/e2e-journey.test.ts` (A10b) menguji journey backend penuh: publish 5 soal → join siswa → jawab → submit (`SUBMITTED`) → guru nilai esai (`GRADED`) → report (`avgScore 7`) → export XLSX (baris + skor) → export PDF (`%PDF-`) → analytics (p-value per soal, warning sample) → close exam + audit aktor.
 
-Total **184 test** (7 auth + 9 questions + 10 import + 6 export + 36 exams + 44 attempts + 30 grading + 23 reports + 7 report-export + 5 analytics-stats + 5 analytics + 2 e2e).
+`tests/subjects.test.ts` menguji Fase 10 secara langsung:
+
+- create valid → `201`, `code` uppercase, `ownerId` creator
+- duplicate exact + case-insensitive → `409`
+- code invalid / field asing → `400` (strict)
+- PATCH name only → `200`; PATCH code no-op → `200` (bukan `409`); PATCH lowercase → uppercase
+- PATCH code bentrok mapel lain → `409`, data lama tidak berubah
+- DELETE tanpa referensi → `200 { deleted: true, id }`
+- DELETE dengan question/exam → `409` + `details` benar, subject tetap ada
+- soal soft-deleted tetap dihitung → `409`
+- GET tanpa `withStats` tetap `{ id, name, code }` dan search case-insensitive
+- GET `?withStats=1` → `_count` benar
+- STUDENT `403` di GET/POST/PATCH/DELETE; tanpa sesi `401`; ADMIN full access
+
+Total **198 test** (7 auth + 9 questions + 10 import + 6 export + 36 exams + 44 attempts + 30 grading + 23 reports + 7 report-export + 5 analytics-stats + 5 analytics + 14 subjects + 2 e2e).
 
 ## Verifikasi Fase 1
 
@@ -1192,6 +1235,25 @@ Dijalankan pada Node 22.23.4 (npm 11.19.1), 27 Oktober 2026.
 - **E2E journey**: publish 5 soal → join → jawab → submit (`SUBMITTED`) → nilai esai (`GRADED`, total 7/9) → report `avgScore 7` → XLSX baris siswa + `Total 7/Max 9` → PDF `%PDF-` → analytics p-value per soal → close + audit `closedById`.
 - **Bukti API langsung (curl)**: login `teacher@cbt.local`, `GET /api/reports/<examId>/analytics` → `200`; fixture 5 dan 20 attempt dibuat sementara lalu dihapus kembali.
 
+## Verifikasi Fase 10
+
+Dijalankan pada Node 22.23.4 (npm 11.19.1), 27 Oktober 2026.
+
+- **No schema change**: `git diff -- prisma/schema.prisma` kosong; tidak ada migration baru.
+- **Full suite**: `npx vitest run --reporter=verbose` → **198 test lolos** (14 file), termasuk 14 test `tests/subjects.test.ts`.
+- **Backward compatibility**: `tests/questions.test.ts`, `tests/import.test.ts`, `tests/exams.test.ts` tetap hijau (dropdown Fase 2/3/5 tidak regress).
+- **Static gates**: `npm run lint` 0 error/0 warning; `npm run typecheck` lolos; `npm run build` lolos dan mendaftarkan `/teacher/subjects`, `/api/subjects`, `/api/subjects/[id]`.
+- **Version**: `package.json` → `1.1.0`.
+- **Bukti curl** (server produksi lokal port 3100, login `teacher@cbt.local`):
+  - `POST /api/subjects` body `{ name, code: "curl-p10-..." }` → `201`, response `code: "CURL-P10-..."` (uppercase).
+  - Duplicate `CURL-P10-...` → `409`; duplicate lowercase `curl-p10-...` → `409`.
+  - `PATCH` name only → `200`, code tetap; `PATCH` dengan code yang sama (no-op) → `200` (bukan `409`).
+  - `GET /api/subjects?search=curl-p10-...` → `200 [{ id, name, code }]`; `GET ...?withStats=1` → `200` + `_count: { questions: 1, exams: 0 }`.
+  - `DELETE` mapel dengan 1 soal → `409 { message, details: { questionCount: 1, examCount: 0 } }`.
+  - `DELETE` mapel tanpa referensi → `200 { deleted: true, id }`.
+  - Student `POST /api/subjects` → `403`.
+- **Fixture curl dibersihkan**: question + subject dihapus lewat SQL setelah verifikasi; `remaining = 0`.
+
 ## Struktur Saat Ini
 
 ```text
@@ -1218,6 +1280,10 @@ app/
         filter-bar.tsx
         export-menu.tsx
         delete-dialog.tsx
+    teacher/subjects/
+      page.tsx
+      _components/{subject-search.tsx, subject-form-dialog.tsx,
+                  delete-subject-dialog.tsx}
     teacher/exams/
       page.tsx
       new/page.tsx
@@ -1296,7 +1362,10 @@ app/
       [examId]/route.ts
       [examId]/export/route.ts
       [examId]/analytics/route.ts
-    subjects/route.ts
+    subjects/
+      _shared.ts
+      route.ts
+      [id]/route.ts
   globals.css
   layout.tsx
   page.tsx
@@ -1322,14 +1391,15 @@ lib/
   exporters/{shared.ts, xlsx.ts, pdf.ts, pdf-document.tsx,
              report-xlsx.ts, report-pdf.ts, report-pdf-document.tsx}
   questions/{answers.ts, labels.ts, query.ts}
+  subjects/query.ts
   exams/{datetime.ts, labels.ts, query.ts, snapshot.ts, token.ts}
   attempts/{time.ts, shuffle.ts, grade.ts, payload.ts, service.ts}
   grading/{constants.ts, late.ts, types.ts, recompute.ts, snapshot.ts,
             query.ts, service.ts}
   reports/{types.ts, labels.ts, stats.ts, query.ts}
   analytics/{types.ts, labels.ts, stats.ts, query.ts}
-  zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts, grading.ts,
-               report.ts, analytics.ts}
+  zod-schemas/{auth.ts, attempt.ts, exam.ts, question.ts, subject.ts,
+               grading.ts, report.ts, analytics.ts}
 SECURITY.md
 middleware.ts
 public/
@@ -1348,6 +1418,7 @@ tests/
   report-export.test.ts
   analytics-stats.test.ts
   analytics.test.ts
+  subjects.test.ts
   e2e-auth.test.ts
   e2e-journey.test.ts
   fixtures/import/{valid.docx, invalid-no-answer.docx, valid.pdf, corrupt.pdf}
@@ -1431,6 +1502,16 @@ prisma/
 - **Metrik adalah Classical Test Theory (CTT), bukan IRT.** Belum ada parameter a/b/c, reliability (KR-20/alpha), atau distractor analysis formal.
 - **Analytics tetap bisa dibuka untuk exam `CLOSED`** (konsisten dengan laporan Fase 8).
 
+### Manajemen mapel (Fase 10)
+
+- **Hard-delete permanen.** Tidak ada soft-delete/restore untuk `Subject`; mapel hanya bisa dihapus jika tidak dipakai soal/ujian. Koreksi nama/kode harus lewat edit.
+- **Nama mapel tidak unique.** Hanya `code` yang punya constraint unique; dua mapel dengan nama sama tetap valid.
+- **Tidak ada pagination.** Daftar mapel dimuat sekaligus; asumsi MVP < 100 mapel.
+- **Search tanpa index.** `contains`/ILIKE pada `name`/`code` tidak memakai B-tree; tambahkan `pg_trgm` + GIN index bila jumlah mapel tumbuh besar.
+- **Tidak ada audit log create/update/delete mapel.** `ownerId` hanya mencatat creator, bukan riwayat perubahan atau aktor edit/hapus.
+- **Data lama lowercase tidak dimigrasi.** Duplicate dicek case-insensitive dan `P2002` ditangkap, tetapi baris lama dengan `code` lowercase tetap tersimpan apa adanya sampai diedit.
+- **Semua TEACHER/ADMIN dapat mengubah/menghapus mapel milik guru lain.** Ini disengaja karena mapel adalah domain bersama; tidak ada scope `ownerId`.
+
 ### Dependensi dan tooling
 
 - **`xlsx@0.18.5` high severity tanpa fix.** Advisory Prototype Pollution dan ReDoS pada SheetJS. Dipakai untuk import dan export; akses sudah dibatasi TEACHER/ADMIN, file import dibatasi 10MB, dan export dibatasi 2.000 soal. Jangan membuka upload ke pengguna anonim; tinjau ulang sebelum produksi.
@@ -1486,17 +1567,17 @@ Prioritas untuk go-live. Detail teknis ada di **Known Issues & Tech Debt** di at
 
 ## Roadmap
 
-- **Fase 10 — Production Hardening**: rate limit (Redis/Upstash), rotasi token, cleanup upload cron, health check + structured logging/Sentry, backup otomatis.
-- **Fase 11 — Fitur Akademik**: retake, KKM/passing grade, batch short-answer override, essay feedback, clone exam, analisis tren.
-- **Fase 12 — Dependency & Performance**: Zod 4, Next 16, Prisma 7, Vitest 5, ExcelJS, `pg_trgm`, streaming export, materialized analytics.
+- **Fase 11 — Production Hardening**: rate limit (Redis/Upstash), rotasi token, cleanup upload cron, health check + structured logging/Sentry, backup otomatis.
+- **Fase 12 — Fitur Akademik**: retake, KKM/passing grade, batch short-answer override, essay feedback, clone exam, analisis tren.
+- **Fase 13 — Dependency & Performance**: Zod 4, Next 16, Prisma 7, Vitest 5, ExcelJS, `pg_trgm`, streaming export, materialized analytics.
 - **Tidak dijadwalkan**: anti-cheat penuh, multi-timezone, IRT/parameter a-b-c, integrasi DAPODIK.
 
 ## Fase Berikutnya
 
-Fase 9 (analytics, audit trail, E2E, release docs) selesai. Aplikasi siap deploy dengan catatan **P0** di atas. Fase berikutnya mengikuti **Roadmap**: production hardening lebih dulu, bukan fitur baru.
+Fase 9 (analytics, audit trail, E2E, release docs) dan Fase 10 (manajemen mapel) selesai. Aplikasi siap deploy dengan catatan **P0** di atas. Fase berikutnya mengikuti **Roadmap**: production hardening lebih dulu, bukan fitur baru.
 
 Kandidat fitur yang tetap terbuka:
-- manajemen pengguna dan mata pelajaran (CRUD, import siswa/kelas),
+- manajemen pengguna dan import siswa/kelas,
 - KKM/passing grade per mapel/kelas + rekap kelulusan,
 - feedback per esai (`Answer.feedback`) dan tombol finalize eksplisit,
 - audit log penuh untuk perubahan nilai/manual override,

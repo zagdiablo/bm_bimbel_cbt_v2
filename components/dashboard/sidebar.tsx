@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
+  BookOpen,
   ClipboardCheck,
   ClipboardList,
   FileQuestion,
@@ -33,6 +34,11 @@ function navItemsForRole(role: Role): NavItem[] {
       href: "/teacher/questions",
       label: "Bank Soal",
       icon: FileQuestion,
+    });
+    items.push({
+      href: "/teacher/subjects",
+      label: "Mapel",
+      icon: BookOpen,
     });
     items.push({
       href: "/teacher/exams",
@@ -101,7 +107,7 @@ export function DashboardSidebar({ role }: { role: Role }) {
       </nav>
 
       <div className="border-t p-4 text-xs text-muted-foreground">
-        Fase 9 &middot; Analytics &amp; Release
+        Fase 10 &middot; Manajemen Mapel
       </div>
     </aside>
   );
