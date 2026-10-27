@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  FileQuestion,
   FlaskConical,
   LayoutDashboard,
   type LucideIcon,
@@ -19,10 +20,22 @@ type NavItem = {
 };
 
 function navItemsForRole(role: Role): NavItem[] {
-  return [
+  const items: NavItem[] = [
     { href: ROLE_HOME[role], label: "Ringkasan", icon: LayoutDashboard },
-    { href: "/smoke", label: "Smoke test", icon: FlaskConical },
   ];
+
+  // ADMIN memakai workspace guru sebagai super-user (lihat middleware).
+  if (role === "TEACHER" || role === "ADMIN") {
+    items.push({
+      href: "/teacher/questions",
+      label: "Bank Soal",
+      icon: FileQuestion,
+    });
+  }
+
+  items.push({ href: "/smoke", label: "Smoke test", icon: FlaskConical });
+
+  return items;
 }
 
 export function DashboardSidebar({ role }: { role: Role }) {
@@ -40,7 +53,8 @@ export function DashboardSidebar({ role }: { role: Role }) {
       <nav className="flex flex-1 flex-col gap-1 p-3">
         {items.map((item) => {
           const Icon = item.icon;
-          const isActive = pathname === item.href;
+          const isActive =
+            pathname === item.href || pathname.startsWith(`${item.href}/`);
 
           return (
             <Link
@@ -61,7 +75,7 @@ export function DashboardSidebar({ role }: { role: Role }) {
       </nav>
 
       <div className="border-t p-4 text-xs text-muted-foreground">
-        Fase 1 &middot; Fondasi auth &amp; RBAC
+        Fase 2 &middot; Bank Soal
       </div>
     </aside>
   );

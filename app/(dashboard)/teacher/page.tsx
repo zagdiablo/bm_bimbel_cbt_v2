@@ -21,7 +21,7 @@ const stats = [
 ];
 
 export default async function TeacherPage() {
-  const user = await requirePageRole(["TEACHER"], "/teacher");
+  const user = await requirePageRole(["TEACHER", "ADMIN"], "/teacher");
 
   return (
     <div className="flex flex-col gap-6">

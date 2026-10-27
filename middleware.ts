@@ -4,7 +4,8 @@ import type { Role } from "@prisma/client";
 
 const ROLE_RULES: ReadonlyArray<{ prefix: string; roles: readonly Role[] }> = [
   { prefix: "/admin", roles: ["ADMIN"] },
-  { prefix: "/teacher", roles: ["TEACHER"] },
+  // ADMIN is a super-user inside the teacher workspace (Bank Soal, exams).
+  { prefix: "/teacher", roles: ["TEACHER", "ADMIN"] },
   { prefix: "/student", roles: ["STUDENT"] },
 ];
 
