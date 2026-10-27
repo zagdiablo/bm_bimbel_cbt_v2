@@ -1,9 +1,14 @@
 import type { Metadata } from "next";
-import { Providers } from "@/components/providers";
+
+import { Toaster } from "@/components/ui/toaster";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CBT App",
+  title: {
+    default: "CBT App",
+    template: "%s | CBT App",
+  },
   description: "Computer Based Test untuk sekolah dan kampus",
 };
 
@@ -13,9 +18,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="id">
-      <body className="font-sans antialiased">
-        <Providers>{children}</Providers>
+    <html lang="id" suppressHydrationWarning>
+      <body className="min-h-screen bg-background font-sans antialiased">
+        {children}
+        <Toaster />
       </body>
     </html>
   );

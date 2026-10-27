@@ -1,42 +1,60 @@
-import { Button, Card, CardBody, Typography } from "@material-tailwind/react";
+import Link from "next/link";
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+
+const phaseOneItems = [
+  "shadcn/ui (Radix + Tailwind) menggantikan Material Tailwind v3 beta",
+  "Login, registrasi, dan session better-auth",
+  "RBAC di middleware dan server component",
+  "Dashboard stub untuk admin, guru, dan siswa",
+];
 
 export default function Home() {
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center gap-6 p-6">
+    <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center gap-8 p-6">
       <div className="flex flex-col gap-3">
-        <span className="w-fit rounded-full bg-info px-3 py-1 text-xs font-medium text-info-foreground">
-          Fase 0
+        <span className="w-fit rounded-full bg-secondary px-3 py-1 text-xs font-medium text-secondary-foreground">
+          Fase 1
         </span>
-        <Typography variant="h2">CBT App</Typography>
-        <Typography className="max-w-xl opacity-70">
+        <h1 className="text-4xl font-bold tracking-tight">CBT App</h1>
+        <p className="max-w-xl text-muted-foreground">
           Fondasi aplikasi Computer Based Test: Next.js 15, Prisma,
-          PostgreSQL, better-auth, dan Material Tailwind.
-        </Typography>
+          PostgreSQL, better-auth, dan shadcn/ui.
+        </p>
       </div>
 
       <Card>
-        <CardBody className="flex flex-col gap-4">
-          <Typography variant="h6">Yang sudah siap</Typography>
-          <ul className="list-inside list-disc space-y-1 text-sm opacity-80">
-            <li>Schema Prisma dan migrasi awal</li>
-            <li>Seed 3 role, 1 mata pelajaran, dan 5 tipe soal</li>
-            <li>better-auth route handler dan session cookie httpOnly</li>
-            <li>Material Tailwind provider dan smoke test komponen</li>
+        <CardHeader>
+          <CardTitle>Yang sudah siap</CardTitle>
+          <CardDescription>
+            Autentikasi berbasis role dengan proteksi route.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-6">
+          <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
+            {phaseOneItems.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
           </ul>
           <div className="flex flex-wrap gap-3">
-            <Button as="a" href="/smoke">
-              Buka smoke test
+            <Button asChild>
+              <Link href="/login">Masuk</Link>
             </Button>
-            <Button
-              as="a"
-              href="/api/auth/get-session"
-              variant="outline"
-              color="secondary"
-            >
-              Cek auth handler
+            <Button asChild variant="outline">
+              <Link href="/register">Daftar</Link>
+            </Button>
+            <Button asChild variant="ghost">
+              <Link href="/smoke">Smoke test</Link>
             </Button>
           </div>
-        </CardBody>
+        </CardContent>
       </Card>
     </main>
   );

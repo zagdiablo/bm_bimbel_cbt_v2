@@ -1,24 +1,43 @@
 "use client";
 
 import { useState } from "react";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
-  Alert,
-  AlertContent,
-  AlertIcon,
-  Button,
   Card,
-  CardBody,
+  CardContent,
+  CardDescription,
   CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
   Dialog,
+  DialogClose,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   DialogTrigger,
-  Input,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
   Select,
-  SelectList,
-  SelectOption,
+  SelectContent,
+  SelectItem,
   SelectTrigger,
-  Typography,
-} from "@material-tailwind/react";
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 const subjects = [
   { value: "mtk", label: "Matematika" },
@@ -32,108 +51,106 @@ export default function SmokePage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 p-6">
       <div>
-        <Typography variant="h4">
-          Material Tailwind smoke test
-        </Typography>
-        <Typography className="opacity-70">
-          Halaman sementara untuk memvalidasi komponen inti.
-        </Typography>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          shadcn/ui smoke test
+        </h1>
+        <p className="text-muted-foreground">
+          Halaman sementara untuk memvalidasi komponen inti dan SSR.
+        </p>
       </div>
 
       <Card>
-        <CardHeader className="p-4">
-          <Typography variant="h6">Form controls</Typography>
+        <CardHeader>
+          <CardTitle>Form controls</CardTitle>
+          <CardDescription>
+            Input, Select, Dialog, dan Button dirender di server tanpa error.
+          </CardDescription>
         </CardHeader>
-        <CardBody className="flex flex-col gap-4 p-4 pt-0">
+        <CardContent className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
-            <label htmlFor="smoke-input" className="text-sm font-medium">
-              Nama
-            </label>
+            <Label htmlFor="smoke-input">Nama</Label>
             <Input
               id="smoke-input"
               data-testid="smoke-input"
               placeholder="Tulis nama"
-              color="primary"
             />
           </div>
 
           <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium">Mata pelajaran</span>
+            <Label htmlFor="smoke-select">Mata pelajaran</Label>
             <Select value={subject} onValueChange={setSubject}>
-              <SelectTrigger data-testid="smoke-select" placeholder="Pilih mapel">
-                {({ value, element }) =>
-                  element ??
-                  subjects.find((item) => item.value === (value ?? subject))?.label ??
-                  "Pilih mapel"
-                }
+              <SelectTrigger id="smoke-select" data-testid="smoke-select">
+                <SelectValue placeholder="Pilih mapel" />
               </SelectTrigger>
-              <SelectList>
+              <SelectContent>
                 {subjects.map((item) => (
-                  <SelectOption key={item.value} value={item.value}>
+                  <SelectItem key={item.value} value={item.value}>
                     {item.label}
-                  </SelectOption>
+                  </SelectItem>
                 ))}
-              </SelectList>
+              </SelectContent>
             </Select>
-            <span className="text-xs opacity-70" data-testid="selected-subject">
+            <span className="text-xs text-muted-foreground" data-testid="selected-subject">
               Dipilih: {subject}
             </span>
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <Button data-testid="smoke-button" onClick={() => setDialogOpen(true)}>
-              Buka dialog
-            </Button>
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <DialogTrigger as="span" className="hidden">
-                Dialog
+              <DialogTrigger asChild>
+                <Button data-testid="smoke-button">Buka dialog</Button>
               </DialogTrigger>
               <DialogContent data-testid="smoke-dialog">
-                <Typography variant="h6">Dialog aktif</Typography>
-                <Typography className="mt-2">
-                  Komponen Dialog berhasil dirender dan dapat ditutup.
-                </Typography>
-                <div className="mt-4">
-                  <Button size="sm" onClick={() => setDialogOpen(false)}>
-                    Tutup
-                  </Button>
-                </div>
+                <DialogHeader>
+                  <DialogTitle>Dialog aktif</DialogTitle>
+                  <DialogDescription>
+                    Komponen Dialog berhasil dirender dan dapat ditutup.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <DialogClose asChild>
+                    <Button size="sm">Tutup</Button>
+                  </DialogClose>
+                </DialogFooter>
               </DialogContent>
             </Dialog>
-            <Button color="secondary" variant="outline" data-testid="smoke-outline">
+            <Button variant="outline" data-testid="smoke-outline">
               Tombol sekunder
             </Button>
           </div>
-        </CardBody>
+        </CardContent>
       </Card>
 
-      <Alert color="success" data-testid="smoke-alert">
-        <AlertIcon />
-        <AlertContent>Alert berhasil dirender.</AlertContent>
+      <Alert data-testid="smoke-alert">
+        <AlertTitle>Alert berhasil dirender</AlertTitle>
+        <AlertDescription>
+          Komponen Alert memakai token warna CSS variables.
+        </AlertDescription>
       </Alert>
 
       <Card>
-        <CardHeader className="p-4">
-          <Typography variant="h6">Table (native Tailwind)</Typography>
+        <CardHeader>
+          <CardTitle>Table</CardTitle>
+          <CardDescription>Tabel semantik dari shadcn/ui.</CardDescription>
         </CardHeader>
-        <CardBody className="overflow-x-auto p-0">
-          <table className="w-full text-left text-sm" data-testid="smoke-table">
-            <thead className="bg-surface-light">
-              <tr>
-                <th className="px-4 py-3 font-semibold">No</th>
-                <th className="px-4 py-3 font-semibold">Nama</th>
-                <th className="px-4 py-3 font-semibold">Nilai</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-t border-surface">
-                <td className="px-4 py-3">1</td>
-                <td className="px-4 py-3">Siswa Demo</td>
-                <td className="px-4 py-3">90</td>
-              </tr>
-            </tbody>
-          </table>
-        </CardBody>
+        <CardContent className="p-0 pb-4">
+          <Table data-testid="smoke-table">
+            <TableHeader>
+              <TableRow>
+                <TableHead>No</TableHead>
+                <TableHead>Nama</TableHead>
+                <TableHead>Nilai</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow>
+                <TableCell>1</TableCell>
+                <TableCell>Siswa Demo</TableCell>
+                <TableCell>90</TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </CardContent>
       </Card>
     </main>
   );
